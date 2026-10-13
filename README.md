@@ -23,7 +23,8 @@ without** external security tools installed.
 - **Built-in fallbacks** — when an external tool is missing, Shaidra uses its
   own engine instead of skipping the stage: subdomain enumeration from
   Certificate Transparency logs (crt.sh, hackertarget) plus a DNS-wordlist
-  brute-force with a wildcard-DNS guard, a same-origin spider that records
+  brute-force with a wildcard-DNS guard, a TCP connect port scan over common
+  ports, a same-origin spider that records
   HTML forms and also mines endpoints from `robots.txt`, `sitemap.xml`, and
   JavaScript bundles (so JavaScript-driven apps are not missed), wordlist
   probing, API/CMS/misconfiguration path checks, a leaked-credential scanner,
@@ -127,7 +128,7 @@ shaidra example.com -oJ --output-dir out --output-name my-run
 
 | Stage | What it does |
 | ----- | ------------ |
-| `recon` | Live-host probing; subdomain enumeration via available tools, or built-in Certificate Transparency lookups + DNS wordlist brute-force |
+| `recon` | Live-host probing; subdomain enumeration via available tools, or built-in Certificate Transparency lookups + DNS wordlist brute-force; port scan via naabu or a built-in TCP connect scan over common ports |
 | `crawl` | URL discovery feeding the webvuln and redirect stages (katana/archives, or the built-in spider, which also mines robots.txt, sitemap.xml, and JavaScript) |
 | `content` | Content discovery via ffuf/feroxbuster, or built-in wordlist probing |
 | `api` | Probes Swagger/OpenAPI, GraphQL, Actuator, and OpenID paths |

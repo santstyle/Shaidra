@@ -9,8 +9,11 @@ tech, and optionally merges WhatWeb output when that tool is installed.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import os
 import re
+import tempfile
 from collections.abc import Iterable
 from typing import Final
 
@@ -111,17 +114,28 @@ def _find_generator(body: str) -> str | None:
 
 
 async def _whatweb_tokens(ctx: ScanContext, url: str) -> list[str]:
-    """Return WhatWeb plugin names, or [] when the tool is missing or fails."""
+    """Return WhatWeb plugin names, or [] when the tool is missing or fails.
+
+    WhatWeb's ``--log-json=-`` (write to stdout) is unreliable on Windows, so the
+    report is written to a temp file and read back from there.
+    """
     if not ctx.has_tool("whatweb"):
         return []
-    result = await run_tool(
-        ["whatweb", "-q", "--log-json=-", url],
-        RunOptions(timeout=float(ctx.config.timeout_for("whatweb", 300))),
-    )
-    if not result.ok:
-        return []
+    handle, report = tempfile.mkstemp(prefix="shaidra-whatweb-", suffix=".json")
+    os.close(handle)
     try:
-        raw: object = json.loads(result.stdout)
+        result = await run_tool(
+            ["whatweb", "-q", f"--log-json={report}", url],
+            RunOptions(timeout=float(ctx.config.timeout_for("whatweb", 300))),
+        )
+        if not result.ok:
+            return []
+        text = _read_report(report) or result.stdout
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(report)
+    try:
+        raw: object = json.loads(text)
     except json.JSONDecodeError:
         return []
     if not isinstance(raw, list):
@@ -134,6 +148,14 @@ async def _whatweb_tokens(ctx: ScanContext, url: str) -> list[str]:
         if isinstance(plugins, dict):
             tokens.extend(name for name in plugins if isinstance(name, str))
     return tokens
+
+
+def _read_report(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    except OSError:
+        return ""
 
 
 def _merge_tech(host: Host, tokens: Iterable[str]) -> None:

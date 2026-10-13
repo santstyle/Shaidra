@@ -177,7 +177,9 @@ async def _install_from_release(spec: _Spec, target: Path, notify: Notify) -> bo
         found = _find_binary(extracted, spec.binary)
         if found is None:
             return False
-        _place(found, target, spec.binary)
+        destination = _place(found, target, spec.binary)
+        if not destination.is_file():
+            return False
     await notify(f"{spec.binary}: installed from {spec.repo} release")
     return True
 
@@ -200,6 +202,10 @@ async def _install_from_go(spec: _Spec, target: Path, notify: Notify) -> bool:
     if process.returncode != 0:
         detail = stderr.decode("utf-8", "replace").strip().splitlines()
         await notify(f"{spec.binary}: go install failed ({detail[-1] if detail else 'unknown error'})")
+        return False
+    binary = spec.binary + (".exe" if sys.platform == "win32" else "")
+    if not (target / binary).is_file():
+        await notify(f"{spec.binary}: go install produced no binary")
         return False
     await notify(f"{spec.binary}: installed via go install")
     return True
@@ -278,8 +284,9 @@ def _find_binary(files: Sequence[Path], binary: str) -> Path | None:
     return None
 
 
-def _place(source: Path, target: Path, binary: str) -> None:
+def _place(source: Path, target: Path, binary: str) -> Path:
     destination = target / (binary + (".exe" if sys.platform == "win32" else ""))
     shutil.copy2(source, destination)
     if sys.platform != "win32":
         os.chmod(destination, 0o755)
+    return destination

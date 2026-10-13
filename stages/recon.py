@@ -9,6 +9,7 @@ falling back to Shaidra's own httpx library when the Go tool is missing.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html as html_lib
 import json
 import re
@@ -40,6 +41,19 @@ _ADMIN_PORTS: Final[dict[int, str]] = {
     2375: "Docker API",
     5900: "VNC",
 }
+_PORT_SCAN_TIMEOUT: Final[float] = 1.5
+_PORT_SCAN_CONCURRENCY: Final[int] = 200
+_COMMON_PORTS: Final[tuple[int, ...]] = (
+    21, 22, 23, 25, 53, 80, 81, 110, 111, 135, 139, 143, 161, 389, 443, 445,
+    465, 514, 587, 631, 636, 993, 995, 1080, 1433, 1521, 1723, 2049, 2082,
+    2083, 2086, 2087, 2095, 2096, 2181, 2222, 2375, 2376, 3000, 3128, 3268,
+    3306, 3389, 3690, 4000, 4040, 4369, 4444, 4848, 5000, 5432, 5555, 5601,
+    5672, 5900, 5901, 5984, 6000, 6379, 6443, 7001, 7002, 7077, 7443, 8000,
+    8008, 8009, 8010, 8042, 8069, 8080, 8081, 8086, 8088, 8090, 8161, 8180,
+    8200, 8443, 8500, 8529, 8888, 8983, 9000, 9001, 9042, 9060, 9090, 9092,
+    9100, 9160, 9200, 9300, 9443, 10000, 10250, 11211, 15672, 27017, 27018,
+    50000, 50070,
+)
 _CRT_SH_URL: Final[str] = "https://crt.sh/"
 _HACKERTARGET_URL: Final[str] = "https://api.hackertarget.com/hostsearch/"
 _CRT_TIMEOUT: Final[float] = 25.0
@@ -75,10 +89,15 @@ async def run(ctx: ScanContext, bus: EventBus) -> None:
 
 
 async def scan_ports(ctx: ScanContext, bus: EventBus) -> None:
-    """Scan top ports with naabu and report interesting open services."""
-    if not ctx.has_tool("naabu"):
-        await bus.stage_skip(PORT_STAGE, "naabu not installed")
+    """Scan common ports and report interesting open services."""
+    if ctx.has_tool("naabu"):
+        await _scan_ports_naabu(ctx, bus)
         return
+    await _scan_ports_builtin(ctx, bus)
+
+
+async def _scan_ports_naabu(ctx: ScanContext, bus: EventBus) -> None:
+    """Top-ports scan via ProjectDiscovery naabu."""
     await bus.stage_start(PORT_STAGE)
     argv = ["naabu", "-host", _bare_host(ctx.target), "-top-ports", "1000", "-silent", "-rate", str(ctx.rate_limit)]
     opts = RunOptions(timeout=float(ctx.config.timeout_for("naabu", 600)))
@@ -112,6 +131,61 @@ async def scan_ports(ctx: ScanContext, bus: EventBus) -> None:
                 )
             )
     await bus.stage_done(PORT_STAGE, f"{found} open port(s) found")
+
+
+async def _scan_ports_builtin(ctx: ScanContext, bus: EventBus) -> None:
+    """Fallback: async TCP connect scan over a common-port list.
+
+    Used when naabu is unavailable — including when a host antivirus
+    quarantines the naabu binary — so port discovery still works out of the box.
+    """
+    await bus.stage_start(PORT_STAGE)
+    host = _bare_host(ctx.target)
+    matched = _match_host(ctx, host)
+    if matched is None:
+        await bus.stage_skip(PORT_STAGE, "target not in scope")
+        return
+    await bus.log(
+        f"naabu not installed; falling back to built-in TCP scan ({len(_COMMON_PORTS)} common ports).",
+        LogLevel.WARN,
+    )
+    limiter = RateLimiter(float(ctx.rate_limit))
+    sem = asyncio.Semaphore(_PORT_SCAN_CONCURRENCY)
+    open_ports: list[int] = []
+
+    async def probe(port: int) -> None:
+        await limiter.acquire()
+        async with sem:
+            try:
+                _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=_PORT_SCAN_TIMEOUT)
+            except (OSError, asyncio.TimeoutError):
+                return
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+        open_ports.append(port)
+
+    await asyncio.gather(*(probe(port) for port in _COMMON_PORTS), return_exceptions=True)
+    open_ports.sort()
+    if matched.port is None and open_ports:
+        matched.port = open_ports[0]
+    for port in open_ports:
+        service = _ADMIN_PORTS.get(port)
+        if service is None:
+            continue
+        await bus.finding(
+            Finding(
+                title=f"Open {service} port {port}",
+                severity=Severity.INFO,
+                category=Category.RECON,
+                host=matched.host,
+                tool="builtin",
+                evidence=f"{host}:{port}",
+                url=matched.url,
+                description=f"Port {port} ({service}) is reachable on {host}.",
+            )
+        )
+    await bus.stage_done(PORT_STAGE, f"{len(open_ports)} open port(s) found")
 
 
 async def _enumerate_subdomains(ctx: ScanContext, bus: EventBus, base: str) -> list[str]:
