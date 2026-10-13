@@ -17,9 +17,12 @@ without** external security tools installed.
   `misconfig`, `recon`, `redirect`, `takeover`, `webvuln`; select a subset
   with `--categories`.
 - **Built-in fallbacks** — when an external tool is missing, Shaidra uses its
-  own engine instead of skipping the stage: a same-origin spider, wordlist
-  probing, API/CMS/misconfiguration path checks, and reflected-input /
-  error-based SQLi probes. All checks are non-destructive GET requests.
+  own engine instead of skipping the stage: a same-origin spider that also
+  records HTML forms, wordlist probing, API/CMS/misconfiguration path checks,
+  and form-aware web-vuln probes. The built-in web-vuln engine submits both GET
+  query strings and POST form fields to detect reflected XSS, SQL injection, OS
+  command injection, path traversal / LFI, and SSTI using marker, quote, and
+  file-read payloads — nothing destructive is sent.
 - **Scope enforcement** — discovered hosts outside your scope file are never
   actively scanned.
 - **Adaptive rate limiting** — 40 req/s by default, halved automatically when a
@@ -107,7 +110,7 @@ shaidra example.com -oJ --output-dir out --output-name my-run
 | `misconfig` | Sensitive files and misconfiguration probes |
 | `cors` | Tests for permissive / reflected-origin CORS policies |
 | `jwt` | Inspects JWT tokens found while crawling |
-| `webvuln` | nuclei templates + dalfox XSS, or built-in reflection/SQLi probes |
+| `webvuln` | nuclei templates + dalfox XSS, or built-in form-aware XSS / SQLi / command-injection / LFI / SSTI probes |
 | `redirect` | Open-redirect checks on crawled parameterized URLs |
 | `takeover` | Subdomain takeover fingerprints on discovered hostnames |
 | `cve` | Maps detected software versions to known CVEs |
@@ -129,8 +132,10 @@ credentials in `config.yaml`; read secrets from environment variables.
 - Discovery results outside your scope file are excluded from active scanning.
 - The rate limit defaults to 40 req/s and is halved automatically when a WAF is
   detected.
-- Built-in web-vuln checks are non-destructive: reflected-input markers and
-  detection-only SQLi error probes, always GET.
+- Built-in web-vuln checks are non-destructive: reflection markers, shell echo
+  markers, file-read path payloads, and detection-only SQLi quotes. They probe
+  both GET query strings and POST form fields; no writes, uploads, or data
+  dumps are sent.
 - `sqlmap` runs only in detection-only mode (`--batch --level=1 --risk=1`);
   Shaidra never dumps data or writes to a target.
 - `wpscan` runs only when WordPress is detected; `gowitness` and full wordlists

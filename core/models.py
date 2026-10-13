@@ -157,6 +157,31 @@ class Finding:
         }
 
 
+@dataclass(slots=True)
+class FormTarget:
+    """A server-rendered HTML form the built-in web-vuln engine can submit.
+
+    Recorded by the spider so the web-vuln stage can probe forms that only
+    respond to GET or POST bodies, which query-string-only probes miss.
+    """
+
+    page_url: str
+    action_url: str
+    method: str
+    fields: dict[str, str]
+    has_csrf_token: bool = False
+
+    def to_dict(self) -> dict[str, JsonValue]:
+        """Serialize the form target for the JSON report."""
+        return {
+            "page_url": self.page_url,
+            "action_url": self.action_url,
+            "method": self.method,
+            "fields": dict(self.fields),
+            "has_csrf_token": self.has_csrf_token,
+        }
+
+
 @dataclass(slots=True)  # noqa: MUTABLE_OK - accumulator mutated by every pipeline stage
 class ScanContext:
     """Mutable run state threaded through every stage.
@@ -177,6 +202,7 @@ class ScanContext:
     quiet: bool = False
     hosts: dict[str, Host] = field(default_factory=dict)
     crawled_urls: list[str] = field(default_factory=list)
+    form_targets: list[FormTarget] = field(default_factory=list)
     available_tools: dict[str, bool] = field(default_factory=dict)
     waf: str | None = None
     findings: list[Finding] = field(default_factory=list)

@@ -14,12 +14,12 @@ import json
 import re
 from collections.abc import Sequence
 from typing import Final, Literal
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 
 from shaidra.core.events import EventBus
-from shaidra.core.models import JsonValue, LogLevel, ScanContext
+from shaidra.core.models import FormTarget, JsonValue, LogLevel, ScanContext
 from shaidra.utils.process import RunOptions, stream_lines
 from shaidra.utils.rate_limiter import RateLimiter
 
@@ -28,8 +28,10 @@ MAX_URLS: Final[int] = 2000
 MAX_BASES: Final[int] = 3
 _MAX_RAW: Final[int] = 4000
 _SCHEMES: Final[tuple[str, ...]] = ("http://", "https://")
-SPIDER_MAX_PAGES: Final[int] = 40
-SPIDER_DEPTH: Final[int] = 2
+SPIDER_MAX_PAGES: Final[int] = 80
+_MAX_FORM_FIELDS: Final[int] = 24
+_MAX_FORMS: Final[int] = 300
+SPIDER_DEPTH: Final[int] = 3
 SPIDER_TIMEOUT: Final[float] = 10.0
 _SPIDER_BODY_CAP: Final[int] = 250_000
 _SPIDER_ATTR_RE: Final[re.Pattern[str]] = re.compile(
@@ -39,6 +41,14 @@ _SPIDER_FORM_RE: Final[re.Pattern[str]] = re.compile(r"<form[^>]*>.*?</form>", r
 _SPIDER_METHOD_RE: Final[re.Pattern[str]] = re.compile(r"""method\s*=\s*["']post["']""", re.IGNORECASE)
 _SPIDER_ACTION_RE: Final[re.Pattern[str]] = re.compile(r"""action\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 _SPIDER_INPUT_NAME_RE: Final[re.Pattern[str]] = re.compile(r"""<input[^>]*name=["']([^"']+)["'][^>]*>""", re.IGNORECASE)
+_SPIDER_INPUT_TAG_RE: Final[re.Pattern[str]] = re.compile(r"<input\b[^>]*>", re.IGNORECASE)
+_SPIDER_TEXTAREA_TAG_RE: Final[re.Pattern[str]] = re.compile(r"<textarea\b[^>]*>", re.IGNORECASE)
+_SPIDER_SELECT_TAG_RE: Final[re.Pattern[str]] = re.compile(r"<select\b[^>]*>", re.IGNORECASE)
+_SPIDER_TAG_NAME_RE: Final[re.Pattern[str]] = re.compile(r"""\bname\s*=\s*["']?([^"'\s>/]+)""", re.IGNORECASE)
+_SPIDER_TAG_VALUE_RE: Final[re.Pattern[str]] = re.compile(r"""\bvalue\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
+_SPIDER_TAG_TYPE_RE: Final[re.Pattern[str]] = re.compile(r"""\btype\s*=\s*["']?([^"'\s>/]+)""", re.IGNORECASE)
+_SPIDER_CSRF_RE: Final[re.Pattern[str]] = re.compile(r"(csrf|xsrf|authenticity|nonce|_token|token)", re.IGNORECASE)
+_SPIDER_SKIP_INPUT_RE: Final[frozenset[str]] = frozenset({"submit", "button", "image", "reset", "file"})
 _SPIDER_SKIP_EXT: Final[frozenset[str]] = frozenset({
     ".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
     ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".mp3", ".zip", ".gz", ".pdf",
@@ -96,6 +106,7 @@ async def _spider(ctx: ScanContext, bus: EventBus, seeds: Sequence[str]) -> list
     limiter = RateLimiter(float(max(1, ctx.rate_limit)))
     discovered: dict[str, None] = {}
     frontier: list[tuple[str, int]] = [(seed, 0) for seed in seeds]
+    seen_forms: set[tuple[str, str, tuple[str, ...]]] = set()
     fetched = 0
     async with httpx.AsyncClient(follow_redirects=True, timeout=SPIDER_TIMEOUT, verify=False) as client:
         while frontier and len(discovered) < MAX_URLS:
@@ -128,6 +139,16 @@ async def _spider(ctx: ScanContext, bus: EventBus, seeds: Sequence[str]) -> list
                 if not ctx.scope.in_scope(query_url):
                     continue
                 discovered[query_url] = None
+            for target in _form_targets(url, body):
+                if not ctx.scope.in_scope(target.action_url):
+                    continue
+                key = (target.action_url, target.method, tuple(sorted(target.fields)))
+                if key in seen_forms:
+                    continue
+                seen_forms.add(key)
+                ctx.form_targets.append(target)
+                if len(ctx.form_targets) >= _MAX_FORMS:
+                    break
     return list(discovered)[:MAX_URLS]
 
 
@@ -136,22 +157,83 @@ def _form_query_urls(page_url: str, body: str) -> list[str]:
 
     A GET form (the default method) submits through the query string, so
     discovering only the action URL hides the very parameters that later
-    stages probe. Each form yields one URL carrying its first input name
-    with a blank value, e.g. ``/search.jsp?query=``.
+    stages probe. Each form yields one URL per input name with a blank value,
+    e.g. ``/search.jsp?query=``.
     """
     urls: list[str] = []
     for form in _SPIDER_FORM_RE.findall(body):
         if _SPIDER_METHOD_RE.search(form):
             continue
         action = _SPIDER_ACTION_RE.search(form)
-        target = urljoin(page_url, action.group(1) if action else page_url)
+        raw_action = (action.group(1) if action else "").strip()
+        target = page_url if raw_action in ("", "#") else urljoin(page_url, raw_action)
         names = _SPIDER_INPUT_NAME_RE.findall(form)
         if not names:
             continue
         if not _keep_url(target):
             continue
-        urls.append(f"{target}?{names[0]}=")
+        parts = urlsplit(target)
+        # Drop any fragment: a query placed after "#" is never sent to the
+        # server, which silently hides the parameter from later probes.
+        base = urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, ""))
+        separator = "&" if parts.query else "?"
+        for name in dict.fromkeys(names):
+            urls.append(f"{base}{separator}{name}=")
+            if len(urls) >= _MAX_FORM_FIELDS:
+                return urls
     return urls
+
+
+def _form_targets(page_url: str, body: str) -> list[FormTarget]:
+    """Parse server-rendered forms into probeable :class:`FormTarget` records.
+
+    Only the built-in spider builds these. They let the web-vuln stage submit
+    POST bodies and named GET fields that query-string discovery alone misses.
+    """
+    targets: list[FormTarget] = []
+    for form in _SPIDER_FORM_RE.findall(body):
+        action = _SPIDER_ACTION_RE.search(form)
+        raw_action = (action.group(1) if action else "").strip()
+        target_url = page_url if raw_action in ("", "#") else urljoin(page_url, raw_action)
+        if not _keep_url(target_url):
+            continue
+        fields = _form_fields(form)
+        if not fields:
+            continue
+        method = "POST" if _SPIDER_METHOD_RE.search(form) else "GET"
+        has_token = any(_SPIDER_CSRF_RE.search(name) for name in fields)
+        targets.append(
+            FormTarget(
+                page_url=page_url,
+                action_url=target_url,
+                method=method,
+                fields=fields,
+                has_csrf_token=has_token,
+            )
+        )
+    return targets
+
+
+def _form_fields(form: str) -> dict[str, str]:
+    """Collect name/value pairs from a form's input, textarea, and select tags."""
+    tags = (
+        *_SPIDER_INPUT_TAG_RE.findall(form),
+        *_SPIDER_TEXTAREA_TAG_RE.findall(form),
+        *_SPIDER_SELECT_TAG_RE.findall(form),
+    )
+    fields: dict[str, str] = {}
+    for tag in tags:
+        type_match = _SPIDER_TAG_TYPE_RE.search(tag)
+        if type_match and type_match.group(1).lower() in _SPIDER_SKIP_INPUT_RE:
+            continue
+        name_match = _SPIDER_TAG_NAME_RE.search(tag)
+        if name_match is None:
+            continue
+        value_match = _SPIDER_TAG_VALUE_RE.search(tag)
+        fields.setdefault(name_match.group(1), value_match.group(1) if value_match else "")
+        if len(fields) >= _MAX_FORM_FIELDS:
+            break
+    return fields
 
 
 def _extract_refs(body: str) -> list[str]:

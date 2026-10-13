@@ -185,6 +185,7 @@ async def _emit_findings(ctx: ScanContext, bus: EventBus, hits: list[_Hit]) -> i
         severity = _sensitivity(path)
         if severity is None:
             continue
+        severity = _clamp_by_status(severity, hit.status)
         if emitted >= _MAX_FINDINGS:
             break
         host = urlsplit(hit.url).hostname or ctx.target
@@ -220,6 +221,18 @@ def _sensitivity(path: str) -> Severity | None:
         if marker in lowered:
             return Severity.LOW
     return None
+
+
+def _clamp_by_status(severity: Severity, status: int) -> Severity:
+    """Stop a redirect from masquerading as a high-value exposure.
+
+    A 3xx response only shows the path exists — the body is usually a
+    directory-slash redirect to an ordinary page, so it must never outrank
+    the LOW "worth a look" tier the path name alone can justify.
+    """
+    if 300 <= status < 400 and severity in (Severity.HIGH, Severity.MEDIUM):
+        return Severity.LOW
+    return severity
 
 
 def _describe(severity: Severity) -> str:
