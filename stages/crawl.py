@@ -11,18 +11,38 @@ downstream stages depend on this stage producing input.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from typing import Final, Literal
+from urllib.parse import urljoin, urlsplit
+
+import httpx
 
 from shaidra.core.events import EventBus
 from shaidra.core.models import JsonValue, LogLevel, ScanContext
 from shaidra.utils.process import RunOptions, stream_lines
+from shaidra.utils.rate_limiter import RateLimiter
 
 STAGE_NAME: Final[str] = "Crawl"
 MAX_URLS: Final[int] = 2000
 MAX_BASES: Final[int] = 3
 _MAX_RAW: Final[int] = 4000
 _SCHEMES: Final[tuple[str, ...]] = ("http://", "https://")
+SPIDER_MAX_PAGES: Final[int] = 40
+SPIDER_DEPTH: Final[int] = 2
+SPIDER_TIMEOUT: Final[float] = 10.0
+_SPIDER_BODY_CAP: Final[int] = 250_000
+_SPIDER_ATTR_RE: Final[re.Pattern[str]] = re.compile(
+    r"""(?:href|src|action)\s*=\s*["']([^"']+)["']""", re.IGNORECASE
+)
+_SPIDER_FORM_RE: Final[re.Pattern[str]] = re.compile(r"<form[^>]*>.*?</form>", re.IGNORECASE | re.DOTALL)
+_SPIDER_METHOD_RE: Final[re.Pattern[str]] = re.compile(r"""method\s*=\s*["']post["']""", re.IGNORECASE)
+_SPIDER_ACTION_RE: Final[re.Pattern[str]] = re.compile(r"""action\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+_SPIDER_INPUT_NAME_RE: Final[re.Pattern[str]] = re.compile(r"""<input[^>]*name=["']([^"']+)["'][^>]*>""", re.IGNORECASE)
+_SPIDER_SKIP_EXT: Final[frozenset[str]] = frozenset({
+    ".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
+    ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".mp3", ".zip", ".gz", ".pdf",
+})
 
 Crawler = Literal["katana", "gau", "waybackurls"]
 
@@ -34,7 +54,14 @@ async def run(ctx: ScanContext, bus: EventBus) -> None:
     tools = _select_tools(ctx)
     raw = list(seeds)
     if not tools:
-        await bus.log("No crawler installed (katana, gau, waybackurls); base URLs only", LogLevel.WARN)
+        if ctx.web_reachable:
+            await bus.log(
+                "No crawler installed (katana, gau, waybackurls); using built-in spider",
+                LogLevel.WARN,
+            )
+            raw = list(await _spider(ctx, bus, seeds))
+        else:
+            await bus.log("No crawler installed (katana, gau, waybackurls); base URLs only", LogLevel.WARN)
     for index, tool in enumerate(tools, start=1):
         raw.extend(await _collect(ctx, tool))
         await bus.stage_progress(STAGE_NAME, index, len(tools))
@@ -56,6 +83,95 @@ def _select_tools(ctx: ScanContext) -> list[Crawler]:
     elif ctx.has_tool("waybackurls"):
         tools.append("waybackurls")
     return tools
+
+
+async def _spider(ctx: ScanContext, bus: EventBus, seeds: Sequence[str]) -> list[str]:
+    """Depth-limited same-origin crawler used when no external crawler exists.
+
+    Fetches each seed and the in-scope HTML it links to, extracting href/src/
+    action targets so downstream stages see real application routes (login
+    pages, API docs, forms) instead of only the bare base URL. Every request
+    is throttled through RateLimiter and nothing is written to the target.
+    """
+    limiter = RateLimiter(float(max(1, ctx.rate_limit)))
+    discovered: dict[str, None] = {}
+    frontier: list[tuple[str, int]] = [(seed, 0) for seed in seeds]
+    fetched = 0
+    async with httpx.AsyncClient(follow_redirects=True, timeout=SPIDER_TIMEOUT, verify=False) as client:
+        while frontier and len(discovered) < MAX_URLS:
+            url, depth = frontier.pop(0)
+            if url in discovered:
+                continue
+            discovered[url] = None
+            if depth >= SPIDER_DEPTH or fetched >= SPIDER_MAX_PAGES:
+                continue
+            await limiter.acquire()
+            fetched += 1
+            await bus.stage_progress(STAGE_NAME, fetched, 0)
+            body = ""
+            try:
+                response = await client.get(url)
+                content_type = response.headers.get("content-type", "")
+                if response.status_code == 200 and "html" in content_type.lower():
+                    body = response.text[:_SPIDER_BODY_CAP]
+            except httpx.HTTPError:
+                continue
+            for reference in _extract_refs(body):
+                absolute = urljoin(url, reference)
+                if not _keep_url(absolute):
+                    continue
+                if not ctx.scope.in_scope(absolute):
+                    continue
+                if absolute not in discovered:
+                    frontier.append((absolute, depth + 1))
+            for query_url in _form_query_urls(url, body):
+                if not ctx.scope.in_scope(query_url):
+                    continue
+                discovered[query_url] = None
+    return list(discovered)[:MAX_URLS]
+
+
+def _form_query_urls(page_url: str, body: str) -> list[str]:
+    """Build candidate URLs from GET forms so their fields get tested.
+
+    A GET form (the default method) submits through the query string, so
+    discovering only the action URL hides the very parameters that later
+    stages probe. Each form yields one URL carrying its first input name
+    with a blank value, e.g. ``/search.jsp?query=``.
+    """
+    urls: list[str] = []
+    for form in _SPIDER_FORM_RE.findall(body):
+        if _SPIDER_METHOD_RE.search(form):
+            continue
+        action = _SPIDER_ACTION_RE.search(form)
+        target = urljoin(page_url, action.group(1) if action else page_url)
+        names = _SPIDER_INPUT_NAME_RE.findall(form)
+        if not names:
+            continue
+        if not _keep_url(target):
+            continue
+        urls.append(f"{target}?{names[0]}=")
+    return urls
+
+
+def _extract_refs(body: str) -> list[str]:
+    """Return the href/src/action targets referenced by an HTML page."""
+    refs: list[str] = []
+    for value in _SPIDER_ATTR_RE.findall(body):
+        target = value.strip()
+        if not target or target.startswith(("#", "javascript:", "mailto:", "tel:", "data:")):
+            continue
+        refs.append(target)
+    return refs
+
+
+def _keep_url(url: str) -> bool:
+    """Keep http(s) URLs that are not static-asset downloads."""
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return False
+    path = parts.path.lower()
+    return not path.endswith(tuple(_SPIDER_SKIP_EXT))
 
 
 async def _collect(ctx: ScanContext, tool: Crawler) -> list[str]:

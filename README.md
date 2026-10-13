@@ -1,77 +1,76 @@
 # Shaidra
 
-Deep web vulnerability scanner CLI. Shaidra orchestrates battle-tested recon and
-scanning tools into one parallel pipeline with a live terminal UI.
+Deep web vulnerability scanner CLI. Shaidra runs a parallel `asyncio` pipeline
+of recon and scanning tasks with a live, nmap-style terminal UI, and reports
+differently-severed findings at the end. It is built to work usefully **with or
+without** external security tools installed.
 
-> **Authorized testing only.** Use Shaidra solely against systems you own or have
-> explicit written permission to test (bug bounty scope, lab ranges, engagements).
-> You are responsible for your traffic.
+> **Authorized testing only.** Use Shaidra solely against systems you own or
+> have explicit written permission to test (bug bounty scope, lab ranges,
+> engagements). You are responsible for your traffic.
 
 ## Features
 
-- Parallel `asyncio` pipeline with nmap-style real-time output
-- 11 scan categories selectable with `--categories`
-- Scope enforcement: discovered hosts outside your scope file are skipped from
-  active scanning
-- Rate limiting (default 40 req/s) that auto-lowers when a WAF is detected
-- Graceful degradation: a missing external tool skips its stage instead of
-  crashing the run
-- Non-destructive by default: SQL injection probing runs in detection-only mode
-- No files are written unless you pass an `-o` report flag
+- **Live parallel pipeline** — every stage runs concurrently with a real-time
+  progress view and severity summary at the end.
+- **11 scan categories** — `api`, `cms`, `content`, `cors`, `cve`, `jwt`,
+  `misconfig`, `recon`, `redirect`, `takeover`, `webvuln`; select a subset
+  with `--categories`.
+- **Built-in fallbacks** — when an external tool is missing, Shaidra uses its
+  own engine instead of skipping the stage: a same-origin spider, wordlist
+  probing, API/CMS/misconfiguration path checks, and reflected-input /
+  error-based SQLi probes. All checks are non-destructive GET requests.
+- **Scope enforcement** — discovered hosts outside your scope file are never
+  actively scanned.
+- **Adaptive rate limiting** — 40 req/s by default, halved automatically when a
+  WAF is detected.
+- **Quiet by default** — nothing is written to disk unless you pass an `-o`
+  report flag.
 
-## Requirements
+## Installation
 
-- Python 3.11+
-- Optional external tools (installed and on `PATH`). Missing tools are skipped:
-  `subfinder`, `assetfinder`, `httpx`, `naabu`, `katana`, `nuclei`, `dalfox`,
-  `sqlmap`, `ffuf`, `feroxbuster`, `wpscan`, `testssl.sh`, `kiterunner`,
-  `gowitness`, `wafw00f`, `whatweb`, `jwt_tool`, `subjack`, `gau`,
-  `waybackurls`.
-
-## Install
+Requirements: **Python 3.11+**.
 
 ```bash
-pip install -e .
-# or
-pipx install .
+pip install -e .        # or: pipx install .
+shaidra --version
 ```
 
-This installs the `shaidra` console script.
+External tools are optional. Each one found on `PATH` upgrades its stage;
+missing ones are replaced by the built-in fallback. Supported tools:
+`subfinder`, `assetfinder`, `httpx`, `naabu`, `katana`, `gau`, `waybackurls`,
+`nuclei`, `dalfox`, `sqlmap`, `ffuf`, `feroxbuster`, `wpscan`, `testssl.sh`,
+`kiterunner`, `gowitness`, `wafw00f`, `whatweb`, `jwt_tool`, `subjack`.
+
+## Quick start
+
+```bash
+# Scan a URL, host, or host:port
+shaidra https://example.com
+shaidra http://192.0.2.10:8080
+
+# Restrict to a scope file (one domain, IP, wildcard, or CIDR per line)
+shaidra https://example.com --scope scope.txt
+
+# Run only specific categories
+shaidra https://example.com -c recon,webvuln
+
+# Write reports (JSON / Markdown / plain text)
+shaidra https://example.com -oA
+```
+
+The live view shows every stage's progress and each finding as it is
+confirmed. The final summary groups findings by severity.
 
 ## Usage
 
-```bash
-shaidra <target>
-shaidra example.com
-shaidra http://192.0.2.10:8080
-shaidra https://example.com --scope scope.txt --categories recon,webvuln,cve
 ```
-
-By default Shaidra prints findings to the terminal and writes nothing to disk.
-
-### Reports
-
-Report files are written **only** when requested:
-
-| Flag | Output |
-|------|--------|
-| `-oJ` | JSON report |
-| `-oM` | Markdown report |
-| `-oT` | Plain-text report |
-| `-oA` | All three formats |
-
-```bash
-shaidra example.com -oJ                 # one JSON file
-shaidra example.com -oA                 # json + markdown + txt
-shaidra example.com -oJ -oM -oA         # formats combine
-shaidra example.com -oJ --output-dir out --output-name my-run
+shaidra [OPTIONS] TARGET
 ```
-
-### Options
 
 | Option | Description |
-|--------|-------------|
-| `-s, --scope FILE` | Scope file: one domain, wildcard, IP, or CIDR per line |
+| ------ | ----------- |
+| `-s, --scope FILE` | Scope file: one domain, IP, wildcard, or CIDR per line |
 | `-c, --categories LIST` | Comma-separated categories (default: all) |
 | `-r, --rate-limit N` | Requests per second (default: 40) |
 | `--threads N` | Concurrency for fuzzing tools |
@@ -85,10 +84,33 @@ shaidra example.com -oJ --output-dir out --output-name my-run
 | `--output-name NAME` | Base name for report files |
 | `--version` | Show the version and exit |
 
-## Categories
+### Reports
 
-`recon`, `takeover`, `content`, `webvuln`, `cors`, `redirect`, `jwt`, `api`,
-`cms`, `misconfig`, `cve`.
+Reports are written **only** when you pass `-o`:
+
+```bash
+shaidra example.com -oJ                     # JSON only
+shaidra example.com -oA                     # JSON + Markdown + TXT
+shaidra example.com -oJ -oM -oT -oA         # formats combine
+shaidra example.com -oJ --output-dir out --output-name my-run
+```
+
+## Scan pipeline
+
+| Stage | What it does |
+| ----- | ------------ |
+| `recon` | Live-host probing; subdomain enumeration with available tools |
+| `crawl` | URL discovery feeding the webvuln and redirect stages (katana/archives, or the built-in spider) |
+| `content` | Content discovery via ffuf/feroxbuster, or built-in wordlist probing |
+| `api` | Probes Swagger/OpenAPI, GraphQL, Actuator, and OpenID paths |
+| `cms` | Fingerprints WordPress/Drupal/Joomla/Magento and runs their checks |
+| `misconfig` | Sensitive files and misconfiguration probes |
+| `cors` | Tests for permissive / reflected-origin CORS policies |
+| `jwt` | Inspects JWT tokens found while crawling |
+| `webvuln` | nuclei templates + dalfox XSS, or built-in reflection/SQLi probes |
+| `redirect` | Open-redirect checks on crawled parameterized URLs |
+| `takeover` | Subdomain takeover fingerprints on discovered hostnames |
+| `cve` | Maps detected software versions to known CVEs |
 
 ## Configuration
 
@@ -107,7 +129,9 @@ credentials in `config.yaml`; read secrets from environment variables.
 - Discovery results outside your scope file are excluded from active scanning.
 - The rate limit defaults to 40 req/s and is halved automatically when a WAF is
   detected.
-- SQL injection checks run in detection-only mode (`--batch --level=1 --risk=1`);
+- Built-in web-vuln checks are non-destructive: reflected-input markers and
+  detection-only SQLi error probes, always GET.
+- `sqlmap` runs only in detection-only mode (`--batch --level=1 --risk=1`);
   Shaidra never dumps data or writes to a target.
 - `wpscan` runs only when WordPress is detected; `gowitness` and full wordlists
   run only with `--extended`.

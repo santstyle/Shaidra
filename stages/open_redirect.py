@@ -66,6 +66,9 @@ class _Probe:
 async def run(ctx: ScanContext, bus: EventBus) -> None:
     """Probe candidate endpoints for redirects to an external host."""
     await bus.stage_start(STAGE)
+    if not ctx.web_reachable:
+        await bus.stage_skip(STAGE, "target not reachable")
+        return
     probes = _build_probes(ctx)
     if not probes:
         await bus.stage_skip(STAGE, "no candidate URLs to test")

@@ -14,15 +14,21 @@ from pathlib import Path
 from typing import Final
 from urllib.parse import urlsplit
 
+import httpx
+
 from shaidra.core.events import EventBus
-from shaidra.core.models import Category, Finding, JsonValue, ScanContext, Severity
+from shaidra.core.models import Category, Finding, JsonValue, LogLevel, ScanContext, Severity
 from shaidra.utils.process import RunOptions, run_tool, stream_lines
+from shaidra.utils.rate_limiter import RateLimiter
 
 STAGE_NAME: Final[str] = "Content discovery"
 _STATUS_CODES: Final[str] = "200,204,301,302,307,401,403"
 _MAX_HITS: Final[int] = 500
 _MAX_FINDINGS: Final[int] = 40
 _PROGRESS_EVERY: Final[int] = 25
+_OWN_BUDGET: Final[int] = 400
+_OWN_TIMEOUT: Final[float] = 10.0
+_OWN_HIT_CODES: Final[frozenset[int]] = frozenset({200, 204, 301, 302, 307, 401, 403})
 
 # Sensitivity map, matched against the lowercased path. First tier that
 # matches wins, so the most dangerous tier is checked first.
@@ -62,8 +68,11 @@ async def run(ctx: ScanContext, bus: EventBus) -> None:
         hits = await _feroxbuster_hits(ctx, wordlist, bus)
     elif ctx.has_tool("ffuf"):
         hits = await _ffuf_hits(ctx, wordlist)
+    elif ctx.web_reachable:
+        await bus.log("feroxbuster and ffuf not installed; using built-in wordlist probing", LogLevel.WARN)
+        hits = await _own_hits(ctx, wordlist, bus)
     else:
-        await bus.stage_skip(STAGE_NAME, "feroxbuster and ffuf not installed")
+        await bus.stage_skip(STAGE_NAME, "feroxbuster and ffuf not installed and target not reachable")
         return
     emitted = await _emit_findings(ctx, bus, hits)
     await bus.stage_done(STAGE_NAME, f"{emitted} sensitive paths from {len(hits)} responses")
@@ -117,6 +126,55 @@ async def _ffuf_hits(ctx: ScanContext, wordlist: Path) -> list[_Hit]:
     options = RunOptions(timeout=ctx.config.timeout_for("ffuf"))
     result = await run_tool(argv, options)
     return _ffuf_stdout(result.stdout)
+
+
+async def _own_hits(ctx: ScanContext, wordlist: Path, bus: EventBus) -> list[_Hit]:
+    """Budget-limited probing of the content wordlist with Shaidra's own httpx.
+
+    Used when neither feroxbuster nor ffuf is installed: every wordlist entry
+    is requested once, throttled through RateLimiter, and status codes that
+    warrant review are kept for the shared sensitivity classifier. Request
+    count is capped by _OWN_BUDGET.
+    """
+    lines = _wordlist_lines(wordlist)
+    budget = min(len(lines), _OWN_BUDGET)
+    if budget == 0:
+        return []
+    limiter = RateLimiter(float(max(1, ctx.rate_limit)))
+    hits: list[_Hit] = []
+    base = ctx.target_url.rstrip("/")
+    async with httpx.AsyncClient(follow_redirects=False, timeout=_OWN_TIMEOUT) as client:
+        for index in range(budget):
+            if len(hits) >= _MAX_HITS:
+                break
+            await bus.stage_progress(STAGE_NAME, index + 1, budget)
+            path = lines[index].strip()
+            if not path or path.startswith("#"):
+                continue
+            url = f"{base}/{path.lstrip('/')}"
+            await limiter.acquire()
+            try:
+                response = await client.get(url)
+            except httpx.HTTPError:
+                continue
+            if response.status_code in _OWN_HIT_CODES:
+                hits.append(
+                    _Hit(
+                        url=str(response.url),
+                        status=response.status_code,
+                        length=len(response.content),
+                        tool="shaidra",
+                    )
+                )
+    return hits
+
+
+def _wordlist_lines(path: Path) -> list[str]:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return text.splitlines()
 
 
 async def _emit_findings(ctx: ScanContext, bus: EventBus, hits: list[_Hit]) -> int:

@@ -181,6 +181,7 @@ class ScanContext:
     waf: str | None = None
     findings: list[Finding] = field(default_factory=list)
     start_time: float = 0.0
+    web_reachable: bool = False
 
     def add_host(self, host: Host) -> Host:
         """Merge a host into the context, keeping any facts already known.

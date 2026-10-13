@@ -53,7 +53,10 @@ _PROBES: Final[tuple[_Probe, ...]] = (
     _Probe("/api-docs", "Exposed API documentation", Severity.MEDIUM, ("swagger", "openapi", '"paths"')),
     _Probe("/v2/api-docs", "Exposed API documentation (v2)", Severity.MEDIUM, ("swagger", "openapi", '"paths"')),
     _Probe("/swagger-ui.html", "Exposed Swagger UI", Severity.LOW, ("swagger", "swagger-ui")),
+    _Probe("/swagger/index.html", "Exposed Swagger UI", Severity.LOW, ("swagger", "swagger-ui")),
     _Probe("/graphql", "GraphQL endpoint exposed", Severity.LOW, ("graphql", "query", "data")),
+    _Probe("/graphql", "GraphQL introspection enabled", Severity.MEDIUM, ("introspection",)),
+    _Probe("/api/docs/", "Exposed API documentation (Swagger UI)", Severity.MEDIUM, ("swagger", "openapi")),
     _Probe(
         "/actuator/env",
         "Spring Boot actuator environment exposed",
@@ -74,6 +77,9 @@ _PROBES: Final[tuple[_Probe, ...]] = (
 async def run(ctx: ScanContext, bus: EventBus) -> None:
     """Probe the curated API paths, then optionally sweep with kiterunner."""
     await bus.stage_start(STAGE)
+    if not ctx.web_reachable:
+        await bus.stage_skip(STAGE, "target not reachable")
+        return
     targets = _targets(ctx)
     if not targets:
         await bus.stage_skip(STAGE, "no live in-scope hosts")

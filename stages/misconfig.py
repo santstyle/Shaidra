@@ -23,28 +23,36 @@ from shaidra.utils.rate_limiter import RateLimiter
 STAGE_NAME: Final[str] = "Misconfiguration"
 _HTTP_TIMEOUT: Final[float] = 10.0
 _MAX_HOSTS: Final[int] = 5
-_MAX_PROBE_REQUESTS: Final[int] = 60
+_MAX_PROBE_REQUESTS: Final[int] = 90
 _MAX_FINDINGS: Final[int] = 30
 _MAX_NUCLEI_FINDINGS: Final[int] = 30
 _MAX_TLS_FINDINGS: Final[int] = 5
 _BODY_CAP: Final[int] = 16384
 
 _EXPOSURE_PATHS: Final[tuple[str, ...]] = (
-    ".git/config", ".env", ".htaccess", "phpinfo.php", "server-status",
-    ".DS_Store", "backup.zip", "config.php~", "web.config", "Dockerfile",
+    ".git/config", ".git/HEAD", ".env", ".env.local", ".htaccess", ".htpasswd",
+    "phpinfo.php", "info.php", "server-status", ".DS_Store", "backup.zip",
+    "backup.sql", "config.php~", "config.php.bak", "web.config", "Dockerfile",
+    ".svn/entries", "crossdomain.xml",
 )
-_HIGH_EXPOSURES: Final[frozenset[str]] = frozenset({".env", ".git/config"})
+_HIGH_EXPOSURES: Final[frozenset[str]] = frozenset(
+    {".env", ".env.local", ".git/config", ".git/HEAD", ".htpasswd", "backup.sql", "config.php.bak"}
+)
 _HTACCESS_MARKERS: Final[tuple[str, ...]] = (
     "RewriteRule", "RewriteEngine", "Require ", "Order allow", "Deny from",
 )
 _ENV_LINE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\s*=", re.MULTILINE)
+_HTPASSWD_LINE: Final[re.Pattern[str]] = re.compile(r"^[^\s:#][^:\s]*:.*$", re.MULTILINE)
 _ANSI: Final[re.Pattern[str]] = re.compile(r"\x1b\[[0-9;]*m")
 _TLS_PROTOCOL: Final[re.Pattern[str]] = re.compile(r"\b(SSLv[23]|TLS 1\.[01])\b")
 
 
 async def run(ctx: ScanContext, bus: EventBus) -> None:
     """Probe live hosts for exposed files, then run nuclei/testssl if present."""
-    await bus.stage_start(STAGE_NAME)
+    await bus.stage_start(STAGE)
+    if not ctx.web_reachable:
+        await bus.stage_skip(STAGE, "target not reachable")
+        return
     bases = _in_scope_bases(ctx)
     if not bases:
         await bus.stage_skip(STAGE_NAME, "no live in-scope hosts to probe")
@@ -133,16 +141,25 @@ def _confirmed(path: str, status: int, body: bytes) -> bool:
         return False
     text = body.decode("utf-8", "replace")
     match path:
-        case ".env": return not text.lstrip().startswith("<") and _ENV_LINE.search(text) is not None
+        case ".env" | ".env.local":
+            return not text.lstrip().startswith("<") and _ENV_LINE.search(text) is not None
         case ".git/config": return "[core]" in text
+        case ".git/HEAD": return "ref: refs/heads/" in text
         case ".htaccess": return any(marker in text for marker in _HTACCESS_MARKERS)
+        case ".htpasswd": return _HTPASSWD_LINE.search(text) is not None
         case "phpinfo.php": return "phpinfo" in text.lower()
+        case "info.php": return "phpinfo" in text.lower() or "php version" in text.lower()
         case "server-status": return "apache server status" in text.lower()
         case ".DS_Store": return b"Bud1" in body[:32] or body[:4] == b"\x00\x00\x00\x01"
         case "backup.zip": return body[:4] == b"PK\x03\x04"
-        case "config.php~": return "<?php" in text
+        case "backup.sql": return any(
+            marker in text.lower() for marker in ("mysql dump", "postgresql database dump", "sqlite", "create table")
+        )
+        case "config.php~" | "config.php.bak": return "<?php" in text
         case "web.config": return "<configuration" in text.lower()
         case "Dockerfile": return text.lstrip().upper().startswith("FROM ")
+        case ".svn/entries": return text.lstrip().startswith(("12\n", "10\n", "9\n"))
+        case "crossdomain.xml": return "cross-domain-policy" in text.lower()
         case _: return False
 
 

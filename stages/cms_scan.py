@@ -43,11 +43,15 @@ class Cms(StrEnum):
     WORDPRESS = "WordPress"
     DRUPAL = "Drupal"
     JOOMLA = "Joomla"
+    MAGENTO = "Magento"
 
 
 async def run(ctx: ScanContext, bus: EventBus) -> None:
     """Fingerprint each target, run its CMS checks, and merge wpscan results."""
     await bus.stage_start(STAGE)
+    if not ctx.web_reachable:
+        await bus.stage_skip(STAGE, "target not reachable")
+        return
     targets = _targets(ctx)
     if not targets:
         await bus.stage_skip(STAGE, "no live in-scope hosts")
@@ -70,6 +74,8 @@ async def run(ctx: ScanContext, bus: EventBus) -> None:
                 await _drupal_checks(bus, client, limiter, base)
             if Cms.JOOMLA in families:
                 await _joomla_checks(bus, client, limiter, base)
+            if Cms.MAGENTO in families:
+                await _magento_checks(bus, client, limiter, base)
     await bus.stage_done(STAGE, f"{detected} CMS host(s)")
 
 
@@ -112,6 +118,11 @@ def _classify(body: str, generator: str, powered: str) -> set[Cms]:
         families.add(Cms.DRUPAL)
     if "option=com_" in haystack or "/media/jui/" in haystack or "joomla" in generator:
         families.add(Cms.JOOMLA)
+    if "magento" in haystack and any(
+        marker in haystack
+        for marker in ("/static/version", "data-mage-init", "magento_ui", "mage/cookies", "mage/", "x-magento")
+    ):
+        families.add(Cms.MAGENTO)
     return families
 
 
@@ -223,6 +234,53 @@ async def _joomla_checks(bus: EventBus, client: httpx.AsyncClient, limiter: Rate
             ),
         )
     )
+
+
+async def _magento_checks(bus: EventBus, client: httpx.AsyncClient, limiter: RateLimiter, base: str) -> None:
+    """Check Magento for version disclosure and a reachable admin panel."""
+    version = await _get(client, limiter, f"{base}/magento_version")
+    if version is not None and version.status_code == 200 and "magento/" in version.text.lower():
+        await bus.finding(
+            Finding(
+                title="Magento version disclosure (magento_version)",
+                severity=Severity.INFO,
+                category=Category.CMS,
+                host=_host_of(base),
+                tool="shaidra",
+                url=f"{base}/magento_version",
+                evidence=f"magento_version exposed: {version.text.strip()[:80]}",
+                description=(
+                    "The Magento version file is publicly readable, disclosing the exact edition "
+                    "and version so known vulnerabilities can be mapped against it."
+                ),
+                raw={"version": version.text.strip()[:80]},
+            )
+        )
+
+    for path in ("/admin", "/admin/"):
+        response = await _get(client, limiter, f"{base}{path}")
+        if response is None or response.status_code != 200:
+            continue
+        lower = response.text[:BODY_SNIFF].lower()
+        if "magento" not in lower:
+            continue
+        if any(word in lower for word in ("login", "password", "username", "sign in")):
+            await bus.finding(
+                Finding(
+                    title="Magento admin panel exposed",
+                    severity=Severity.MEDIUM,
+                    category=Category.CMS,
+                    host=_host_of(base),
+                    tool="shaidra",
+                    url=f"{base}{path}",
+                    evidence=f"{base}{path} serves a Magento login form",
+                    description=(
+                        "The Magento admin login panel is publicly reachable; weak or default "
+                        "credentials make it directly attackable."
+                    ),
+                )
+            )
+            break
 
 
 async def _wpscan(ctx: ScanContext, bus: EventBus, base: str) -> None:

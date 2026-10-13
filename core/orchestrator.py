@@ -120,6 +120,9 @@ async def _preflight(ctx: ScanContext, bus: EventBus) -> None:
 
 async def _recon(ctx: ScanContext, bus: EventBus) -> None:
     await _guarded(recon.run, "Recon", ctx, bus)
+    ctx.web_reachable = any(host.is_live for host in ctx.hosts.values())
+    if not ctx.web_reachable:
+        await bus.log("Target did not answer; probe stages will skip fast.", LogLevel.WARN)
     await _guarded(fingerprint.run, "Fingerprint", ctx, bus)
 
 
