@@ -1,8 +1,10 @@
-"""CVE matching with nuclei.
+"""CVE matching.
 
 Runs nuclei's CVE-tagged templates against every live, in-scope host URL and
 normalizes each JSONL match into a Finding with the CVE identifier extracted
-from the template classification (falling back to the template ID).
+from the template classification (falling back to the template ID). When nuclei
+is unavailable, a built-in matcher maps detected service-banner versions onto a
+small curated CVE table instead.
 """
 
 from __future__ import annotations
@@ -15,7 +17,8 @@ from pathlib import Path
 from typing import Final
 
 from shaidra.core.events import EventBus
-from shaidra.core.models import Category, Finding, JsonValue, ScanContext, Severity
+from shaidra.core.models import Category, Finding, Host, JsonValue, LogLevel, ScanContext, Severity
+from shaidra.utils.cve_db import CveEntry, match_tech
 from shaidra.utils.process import RunOptions, stream_lines
 
 STAGE_NAME: Final[str] = "CVE matching"
@@ -35,9 +38,9 @@ class _CveHit:
 
 
 async def run(ctx: ScanContext, bus: EventBus) -> None:
-    """Scan live hosts for known CVEs with nuclei's cve-tagged templates."""
+    """Scan live hosts for known CVEs, with nuclei or the built-in table."""
     if not ctx.has_tool("nuclei"):
-        await bus.stage_skip(STAGE_NAME, "nuclei is not installed")
+        await _builtin_cve(ctx, bus)
         return
 
     targets = _live_target_urls(ctx)
@@ -67,6 +70,51 @@ def _live_target_urls(ctx: ScanContext) -> list[str]:
         if ctx.scope.in_scope(url) and url not in urls:
             urls.append(url)
     return urls
+
+
+async def _builtin_cve(ctx: ScanContext, bus: EventBus) -> None:
+    """Match detected service versions against the built-in CVE table.
+
+    Fallback used when nuclei is unavailable. It only knows a small set of
+    well-documented banner-version CVEs, so every finding is marked as
+    version-based and should be verified against the exact build.
+    """
+    hosts = [host for host in ctx.live_hosts() if host.tech]
+    if not hosts:
+        await bus.stage_skip(STAGE_NAME, "nuclei is not installed; no fingerprinted hosts to match")
+        return
+    await bus.stage_start(STAGE_NAME)
+    await bus.log(
+        "nuclei is not installed; matching detected versions against the built-in CVE table.",
+        LogLevel.WARN,
+    )
+    found = 0
+    for host in hosts:
+        for token in host.tech:
+            for entry in match_tech(token):
+                found += 1
+                await bus.finding(_builtin_finding(host, token, entry))
+    await bus.stage_done(STAGE_NAME, f"{found} finding(s) from the built-in CVE table")
+
+
+def _builtin_finding(host: Host, token: str, entry: CveEntry) -> Finding:
+    """Convert a curated CVE-table hit into a finding."""
+    return Finding(
+        title=entry.title,
+        severity=entry.severity,
+        category=Category.CVE,
+        host=host.host,
+        tool="shaidra",
+        url=host.url,
+        evidence=f"{host.host} reports {token!r}, matching {entry.cve} ({entry.product})",
+        description=(
+            f"{entry.summary} The version is taken from a service banner, so confirm it against "
+            "the exact build before reporting."
+        ),
+        reference=f"https://nvd.nist.gov/vuln/detail/{entry.cve}",
+        cve=entry.cve,
+        raw={"tech": token, "product": entry.product},
+    )
 
 
 async def _run_nuclei(ctx: ScanContext, bus: EventBus, targets_file: Path) -> int:

@@ -15,10 +15,10 @@ import json
 import re
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Coroutine, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 import httpx
@@ -66,6 +66,7 @@ _SSRF_PARAM_RE: Final[re.Pattern[str]] = re.compile(
 )
 _REFLECTION_MARKER: Final[str] = "sdrq<u>z9</u>k"
 _REFLECTION_TEXT: Final[str] = "sdrq"
+_EXEC_CONTEXTS: Final[frozenset[str]] = frozenset({"html", "attribute"})
 _CMDI_MARKER: Final[str] = "SDRm9kXq7"
 _CMDI_LITERAL: Final[str] = f"{_CMDI_MARKER[:6]}$(){_CMDI_MARKER[6:]}"
 _CMDI_TEMPLATES: Final[tuple[str, ...]] = (
@@ -263,16 +264,32 @@ async def _builtin_fallback(ctx: ScanContext, bus: EventBus) -> None:
     found = 0
     try:
         async with make_http_client(ctx, follow_redirects=False, timeout=_OWN_TIMEOUT) as client:
-            found += await _own_csrf(ctx, bus, ctx.form_targets)
-            found += await _own_xxe(ctx, bus, client, limiter, urls, probes)
+            # Every detector shares one client and one rate limiter; running
+            # them concurrently keeps the limiter busy instead of idle between
+            # detectors, so the stage finishes in roughly the time of its
+            # slowest detector rather than the sum of all of them. The limiter
+            # still caps the outgoing request rate.
+            tasks: list[Coroutine[Any, Any, int]] = [
+                _own_csrf(ctx, bus, ctx.form_targets),
+                _own_xxe(ctx, bus, client, limiter, urls, probes),
+            ]
             if probes:
                 if server is not None:
-                    found += await _own_oob(ctx, bus, client, limiter, probes, server)
-                found += await _own_reflection(ctx, bus, client, limiter, probes)
-                found += await _own_cmdi(ctx, bus, client, limiter, probes)
-                found += await _own_lfi(ctx, bus, client, limiter, probes)
-                found += await _own_ssti(ctx, bus, client, limiter, probes)
-                found += await _own_sqli(ctx, bus, client, limiter, probes)
+                    tasks.append(_own_oob(ctx, bus, client, limiter, probes, server))
+                tasks.extend(
+                    (
+                        _own_reflection(ctx, bus, client, limiter, probes),
+                        _own_cmdi(ctx, bus, client, limiter, probes),
+                        _own_lfi(ctx, bus, client, limiter, probes),
+                        _own_ssti(ctx, bus, client, limiter, probes),
+                        _own_sqli(ctx, bus, client, limiter, probes),
+                    )
+                )
+            for result in await asyncio.gather(*tasks, return_exceptions=True):
+                if isinstance(result, int):
+                    found += result
+                elif isinstance(result, BaseException):
+                    await bus.log(f"built-in web-vuln probe failed: {result}", LogLevel.WARN)
     finally:
         if server is not None:
             await server.stop()
@@ -673,6 +690,31 @@ async def _own_oob(
     return found
 
 
+def _reflection_context(text: str, marker: str) -> str:
+    """Classify the HTML context the reflected marker lands in.
+
+    The context decides whether echoed markup is actually executable: a marker
+    inside a comment or a raw-text element is not rendered as markup, while one
+    in normal markup (or a tag attribute) is injectable. Classifying it keeps
+    the HIGH severity reserved for genuinely exploitable reflections.
+    """
+    index = text.find(marker)
+    if index == -1:
+        return "none"
+    before = text[:index].lower()
+    if before.rfind("<!--") > before.rfind("-->"):
+        return "comment"
+    for tag in ("script", "style"):
+        if before.rfind(f"<{tag}") > before.rfind(f"</{tag}"):
+            return "script"
+    for tag in ("textarea", "title", "pre", "xmp"):
+        if before.rfind(f"<{tag}") > before.rfind(f"</{tag}"):
+            return "rawtext"
+    if before.rfind("<") > before.rfind(">"):
+        return "attribute"
+    return "html"
+
+
 async def _own_reflection(
     ctx: ScanContext, bus: EventBus, client: httpx.AsyncClient, limiter: RateLimiter, probes: Sequence[_Probe]
 ) -> int:
@@ -688,10 +730,18 @@ async def _own_reflection(
             # the marker as markup, so flagging it would be a false positive.
             continue
         text = response.text
+        context = "text"
         if _REFLECTION_MARKER in text:
-            severity, note = Severity.HIGH, "the raw HTML marker is echoed unescaped"
+            context = _reflection_context(text, _REFLECTION_MARKER)
+            if context in _EXEC_CONTEXTS:
+                severity = Severity.HIGH
+                note = f"the raw HTML marker is echoed unescaped in {context} context"
+            else:
+                severity = Severity.MEDIUM
+                note = f"the raw HTML marker is echoed in {context} context, where it may not execute"
         elif _REFLECTION_TEXT in text:
-            severity, note = Severity.LOW, "the marker text is echoed but the HTML tags were stripped or escaped"
+            severity = Severity.LOW
+            note = "the marker text is echoed but the HTML tags were stripped or escaped"
         else:
             continue
         found += 1
@@ -708,7 +758,7 @@ async def _own_reflection(
                     f"The {probe.param!r} parameter reflects arbitrary input into the page; {note}. "
                     "This enables reflected XSS and content injection unless the context is escaped."
                 ),
-                raw={"param": probe.param, "method": probe.method, "marker": _REFLECTION_MARKER},
+                raw={"param": probe.param, "method": probe.method, "marker": _REFLECTION_MARKER, "context": context},
             )
         )
     return found

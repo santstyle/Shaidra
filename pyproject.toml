@@ -30,3 +30,7 @@ package-dir = { shaidra = "." }
 
 [tool.setuptools.package-data]
 shaidra = ["config.yaml", "wordlists/*.txt", "templates/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

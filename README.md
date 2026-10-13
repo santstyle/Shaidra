@@ -28,13 +28,13 @@ without** external security tools installed.
   HTML forms and also mines endpoints from `robots.txt`, `sitemap.xml`, and
   JavaScript bundles (so JavaScript-driven apps are not missed), wordlist
   probing, API/CMS/misconfiguration path checks, a leaked-credential scanner,
-  and form-aware web-vuln probes. The built-in web-vuln engine submits both GET
-  query strings and POST form fields to detect reflected XSS, SQL injection, OS
-  command injection, path traversal / LFI, SSTI, and in-band XXE; when a
-  dynamic endpoint exposes no parameter it seeds common names so the detectors
-  still have something to test. It also flags state-changing forms with no
-  anti-CSRF token and confirms SSRF through an out-of-band callback listener —
-  nothing destructive is sent.
+  form-aware web-vuln probes, and a built-in version-to-CVE matcher. The
+  built-in web-vuln engine submits both GET query strings and POST form fields
+  to detect reflected XSS, SQL injection, OS command injection, path traversal /
+  LFI, SSTI, and in-band XXE; when a dynamic endpoint exposes no parameter it
+  seeds common names so the detectors still have something to test. It also
+  flags state-changing forms with no anti-CSRF token and confirms SSRF through
+  an out-of-band callback listener — nothing destructive is sent.
 - **Scope enforcement** — discovered hosts outside your scope file are never
   actively scanned.
 - **Adaptive rate limiting** — 40 req/s by default, halved automatically when a
@@ -139,7 +139,7 @@ shaidra example.com -oJ --output-dir out --output-name my-run
 | `webvuln` | nuclei templates + dalfox XSS, or built-in form-aware XSS / SQLi / command-injection / LFI / SSTI / XXE probes with common-parameter seeding for parameter-less endpoints, anti-CSRF token checks, and out-of-band SSRF confirmation |
 | `redirect` | Open-redirect checks on crawled parameterized URLs |
 | `takeover` | Subdomain takeover fingerprints on discovered hostnames |
-| `cve` | Maps detected software versions to known CVEs |
+| `cve` | Maps detected software versions to known CVEs — nuclei's CVE templates, or a built-in version-to-CVE table when nuclei is absent |
 | `secrets` | Scans crawled assets and responses for leaked credentials, API keys, and tokens |
 
 ## Configuration
