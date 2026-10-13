@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/banner.png" alt="Shaidra — deep web vulnerability scanner" width="100%">
+</p>
+
 # Shaidra
 
 Deep web vulnerability scanner CLI. Shaidra runs a parallel `asyncio` pipeline
