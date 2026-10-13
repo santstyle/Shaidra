@@ -48,6 +48,7 @@ class Config:
     reports_dir: str = "reports"
     wordlist_content: str = "wordlists/common.txt"
     wordlist_api: str = "wordlists/api.txt"
+    wordlist_subdomains: str = "wordlists/subdomains.txt"
     ffuf_threads: int = 40
     katana_depth: int = 3
     waf_rate_limit_drop: float = 0.5
@@ -111,6 +112,7 @@ def build_config(data: Mapping[str, JsonValue]) -> Config:
         reports_dir=_as_str(data.get("reports_dir"), defaults.reports_dir),
         wordlist_content=_as_str(wordlists.get("content"), defaults.wordlist_content),
         wordlist_api=_as_str(wordlists.get("api"), defaults.wordlist_api),
+        wordlist_subdomains=_as_str(wordlists.get("subdomains"), defaults.wordlist_subdomains),
         ffuf_threads=_as_int(data.get("ffuf_threads"), defaults.ffuf_threads),
         katana_depth=_as_int(data.get("katana_depth"), defaults.katana_depth),
         waf_rate_limit_drop=_as_float(data.get("waf_rate_limit_drop"), defaults.waf_rate_limit_drop),

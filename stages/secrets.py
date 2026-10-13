@@ -21,6 +21,7 @@ import httpx
 
 from shaidra.core.events import EventBus
 from shaidra.core.models import Category, Finding, ScanContext
+from shaidra.utils.http import make_http_client
 from shaidra.utils.rate_limiter import RateLimiter
 from shaidra.utils.secrets import SecretMatch, scan_text
 
@@ -53,7 +54,7 @@ async def run(ctx: ScanContext, bus: EventBus) -> None:
     seen_urls: set[str] = set(queue)
     found = 0
     scanned = 0
-    async with httpx.AsyncClient(follow_redirects=False, timeout=_TIMEOUT) as client:
+    async with make_http_client(ctx, follow_redirects=False, timeout=_TIMEOUT) as client:
         while queue and found < _MAX_FINDINGS and scanned < _MAX_URLS:
             url = queue.pop(0)
             scanned += 1

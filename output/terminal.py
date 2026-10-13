@@ -13,13 +13,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Final, assert_never
 
+from rich import box
 from rich.console import Console, Group, RenderableType
 from rich.live import Live
 from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TaskID, TextColumn, TimeElapsedColumn
 from rich.rule import Rule
 from rich.style import Style
-from rich.table import Column
+from rich.table import Column, Table
 from rich.text import Text
 
 from shaidra.core.events import Event, EventBus, FindingEvent, HostEvent, LogEvent, StageEvent
@@ -34,6 +35,7 @@ _MARKERS: Final[dict[LogLevel, str]] = {
 }
 _STAGE_WIDTH: Final[int] = 18
 _BAR_WIDTH: Final[int] = 28
+_MAX_TABLE_ROWS: Final[int] = 25
 
 
 class TerminalRenderer:
@@ -70,19 +72,26 @@ class TerminalRenderer:
             self._handle(event, ctx)
 
     def print_summary(self, ctx: ScanContext, duration: float, report_paths: Mapping[str, str] | None = None) -> None:
-        """Print the closing severity summary and any report paths."""
-        counts = _severity_counts(ctx.findings)
+        """Print the closing summary: counts, a scannable findings table, and report paths."""
+        findings = ctx.findings
+        counts = _severity_counts(findings)
+        self._console.print()
         self._console.print(Rule(style=theme.BRAND_PRIMARY))
-        self._console.print(Text("SEVERITY SUMMARY", style=f"bold {theme.BRAND_ACCENT}"))
+        self._console.print(_headline(len(findings), duration))
         self._console.print(_severity_line(counts))
         self._console.print(Rule(style=theme.BRAND_PRIMARY))
-        self._console.print(_totals_line(ctx, duration))
+        if findings:
+            self._console.print(_findings_table(findings))
+        else:
+            self._console.print(Text("  No findings. Target looks clean.", style=theme.muted_style()))
+        self._console.print(_totals_line(ctx))
         if report_paths:
             for label, path in report_paths.items():
-                line = Text()
+                line = Text("  ")
                 line.append(f"{label} -> ", style=theme.muted_style())
                 line.append(path, style=theme.accent_style())
                 self._console.print(line)
+        self._console.print(Rule(style=theme.BRAND_PRIMARY))
 
     def _handle(self, event: Event, ctx: ScanContext) -> None:
         match event:
@@ -109,7 +118,8 @@ class TerminalRenderer:
         ctx.findings.append(finding)
         if self._quiet:
             return
-        self._console.print(_finding_block(finding, verbose=self._verbose))
+        self._console.print()
+        self._console.print(_finding_block(finding))
 
     def _on_stage(self, stage: StageEvent) -> None:
         if not self._live_enabled:
@@ -168,27 +178,58 @@ def _build_progress(console: Console) -> Progress:
     )
 
 
-def _finding_block(finding: Finding, *, verbose: bool) -> Group:
+def _finding_block(finding: Finding) -> Group:
     color = theme.severity_color(finding.severity)
     head = Text()
-    head.append(f"[{finding.severity.value.upper()}] ", style=Style(color=color, bold=True))
-    head.append(finding.host, style=theme.primary_style())
-    title = Text("  └─ ")
-    title.append(finding.title, style=Style(color=color))
-    lines: list[Text] = [head, title]
+    head.append("  ")
+    head.append("● ", style=Style(color=color, bold=True))
+    head.append(f"{finding.severity.value.upper():<8} ", style=Style(color=color, bold=True))
+    head.append(finding.title, style=Style(bold=True))
+    lines: list[Text] = [head]
+    lines.append(_detail("where", finding.url or finding.host))
     if finding.evidence:
-        lines.append(_detail("evidence: ", finding.evidence))
-    if verbose and finding.url:
-        lines.append(_detail("url: ", finding.url))
-    lines.append(_detail("tool: ", finding.tool))
+        lines.append(_detail("proof", finding.evidence))
+    lines.append(_detail("tool", finding.tool))
     return Group(*lines)
 
 
 def _detail(label: str, value: str) -> Text:
-    line = Text("     ")
-    line.append(label, style=theme.muted_style())
+    line = Text("        ")
+    line.append(f"{label:<7}", style=theme.muted_style())
     line.append(value, style=theme.primary_style())
     return line
+
+
+def _headline(count: int, duration: float) -> Text:
+    line = Text("  ")
+    line.append("SCAN COMPLETE", style=f"bold {theme.BRAND_ACCENT}")
+    line.append("   ")
+    line.append(f"{count} finding(s)", style=theme.primary_style())
+    line.append("   ")
+    line.append(_format_duration(duration), style=theme.muted_style())
+    return line
+
+
+def _findings_table(findings: list[Finding]) -> Table:
+    table = Table(box=box.SIMPLE_HEAD, show_edge=False, pad_edge=False, expand=False, padding=(0, 1))
+    table.add_column("SEVERITY", no_wrap=True)
+    table.add_column("FINDING", overflow="fold")
+    table.add_column("HOST", no_wrap=True)
+    shown = findings[:_MAX_TABLE_ROWS]
+    for finding in shown:
+        table.add_row(
+            Text(finding.severity.value.upper(), style=theme.severity_style(finding.severity)),
+            Text(finding.title, style=theme.primary_style()),
+            Text(finding.host, style=theme.muted_style()),
+        )
+    hidden = len(findings) - len(shown)
+    if hidden > 0:
+        table.add_row(
+            Text(""),
+            Text(f"+{hidden} more (see report)", style=theme.muted_style()),
+            Text(""),
+        )
+    return table
 
 
 def _severity_counts(findings: list[Finding]) -> dict[Severity, int]:
@@ -209,11 +250,10 @@ def _severity_line(counts: dict[Severity, int]) -> Text:
     return line
 
 
-def _totals_line(ctx: ScanContext, duration: float) -> Text:
-    line = Text()
+def _totals_line(ctx: ScanContext) -> Text:
+    line = Text("  ")
     line.append(
-        f"hosts: {len(ctx.hosts)}   live: {len(ctx.live_hosts())}   "
-        f"findings: {len(ctx.findings)}   duration: {_format_duration(duration)}",
+        f"hosts: {len(ctx.hosts)}   live: {len(ctx.live_hosts())}   findings: {len(ctx.findings)}",
         style=theme.muted_style(),
     )
     return line

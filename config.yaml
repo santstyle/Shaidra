@@ -25,6 +25,7 @@ oob_host: ""
 wordlists:
   content: wordlists/common.txt
   api: wordlists/api.txt
+  subdomains: wordlists/subdomains.txt
 
 # Per-tool execution timeouts in seconds.
 timeouts:

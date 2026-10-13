@@ -31,7 +31,7 @@ from shaidra.output.banner import render_banner
 from shaidra.output.report import write_reports
 from shaidra.output.terminal import TerminalRenderer
 
-_ERROR_STYLE = "#F03E3E"
+_ERROR_STYLE = "red"
 
 
 def _harden_streams() -> None:
@@ -72,7 +72,7 @@ def _make_console() -> Console:
 
 app = typer.Typer(
     add_completion=False,
-    no_args_is_help=True,
+    no_args_is_help=False,
     help="Shaidra - deep web vulnerability scanner. Use only on assets you are authorized to test.",
 )
 
@@ -84,9 +84,39 @@ def _version_callback(value: bool) -> None:
         raise typer.Exit()
 
 
+def _request_headers(cookie: str | None, headers: list[str]) -> dict[str, str]:
+    """Merge the ``--cookie`` and repeatable ``--header`` values into one dict."""
+    merged: dict[str, str] = {}
+    if cookie:
+        merged["Cookie"] = cookie
+    for raw in headers:
+        name, sep, value = raw.partition(":")
+        if sep and name.strip():
+            merged[name.strip()] = value.strip()
+    return merged
+
+
+def _prompt_target(console: Console) -> str:
+    """Ask for a target interactively when none was given on the command line."""
+    console.print("Enter the target to scan (host, host:port, or URL).", style="bright_black")
+    while True:
+        try:
+            value = typer.prompt("Target")
+        except (typer.Abort, EOFError, KeyboardInterrupt):
+            console.print("\n[x] no target provided", style=_ERROR_STYLE, markup=False)
+            raise typer.Exit(code=2) from None
+        cleaned = value.strip()
+        if cleaned:
+            return cleaned
+        console.print("[!] target cannot be empty", style="yellow", markup=False)
+
+
 @app.command()
 def main(
-    target: Annotated[str, typer.Argument(help="Target host, host:port, or URL (authorized scope only).")],
+    target: Annotated[
+        str | None,
+        typer.Argument(help="Target host, host:port, or URL (authorized scope only). Prompted if omitted."),
+    ] = None,
     scope: Annotated[str | None, typer.Option("--scope", "-s", help="Scope file: one domain, IP, or CIDR per line.")] = None,
     categories: Annotated[str | None, typer.Option("--categories", "-c", help="Comma-separated categories (default: all).")] = None,
     rate_limit: Annotated[int | None, typer.Option("--rate-limit", "-r", min=1, help="Requests per second (default: 40).")] = None,
@@ -94,6 +124,8 @@ def main(
     mode: Annotated[str | None, typer.Option("--mode", "-m", help="Scan mode: quick or deep.")] = None,
     extended: Annotated[bool, typer.Option("--extended", "-x", help="Enable heavy checks (screenshots, full wordlists).")] = False,
     config_path: Annotated[str | None, typer.Option("--config", help="Path to a config.yaml file.")] = None,
+    cookie: Annotated[str | None, typer.Option("--cookie", help="Session cookie sent with every request, e.g. \"session=abc123\".")] = None,
+    header: Annotated[list[str], typer.Option("--header", "-H", help="Extra request header \"Name: value\" (repeatable).")] = [],
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Show discovered hosts and extra detail.")] = False,
     quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Suppress live output.")] = False,
     output: Annotated[list[str], typer.Option("-o", "--output", help="Report format(s): J, M, T, A (repeatable, e.g. -oJ -oA).")] = [],
@@ -107,16 +139,27 @@ def main(
     """Run a scan against TARGET and stream findings to the terminal."""
     _harden_streams()
     console = _make_console()
+
+    prompted = False
+    raw_target = target.strip() if target else ""
+    if not raw_target:
+        prompted = True
+        if not quiet:
+            render_banner(console)
+        raw_target = _prompt_target(console)
+
     selected = _parse_categories(categories)
     formats = _parse_output_formats(output)
     config = _apply_overrides(load_config(config_path), rate_limit=rate_limit, threads=threads, mode=mode)
 
-    spec = parse_target(target)
+    spec = parse_target(raw_target)
     try:
         effective_scope = build_scope(spec.host, scope)
     except ScopeError as exc:
-        console.print(f"[x] {exc}", style=_ERROR_STYLE)
+        console.print(f"[x] {exc}", style=_ERROR_STYLE, markup=False)
         raise typer.Exit(code=2) from exc
+
+    request_headers = _request_headers(cookie, header)
 
     ctx = ScanContext(
         target=spec.host_port,
@@ -127,11 +170,12 @@ def main(
         extended=extended,
         scope=effective_scope,
         config=config,
+        request_headers=request_headers,
         verbose=verbose,
         quiet=quiet,
     )
 
-    if not quiet:
+    if not quiet and not prompted:
         render_banner(console)
 
     outdir = Path(output_dir) if output_dir else Path(config.reports_dir)
@@ -139,7 +183,7 @@ def main(
     try:
         asyncio.run(_run_scan(ctx, console, formats=formats, outdir=outdir, base_name=base_name))
     except KeyboardInterrupt:
-        console.print("[!] interrupted", style=_ERROR_STYLE)
+        console.print("[!] interrupted", style=_ERROR_STYLE, markup=False)
         raise typer.Exit(code=130) from None
 
 
@@ -173,7 +217,7 @@ def _write_reports(
     try:
         paths = write_reports(ctx, formats, outdir, base_name)
     except OSError as exc:
-        console.print(f"[x] failed to write reports: {exc}", style=_ERROR_STYLE)
+        console.print(f"[x] failed to write reports: {exc}", style=_ERROR_STYLE, markup=False)
         return {}
     labels = {".json": "JSON", ".md": "Markdown", ".txt": "TXT"}
     return {labels.get(path.suffix, path.suffix.lstrip(".").upper()): str(path) for path in paths}

@@ -27,6 +27,7 @@ import httpx
 from shaidra.core.events import EventBus
 from shaidra.core.models import Category, Finding, JsonValue, LogLevel, ScanContext, Severity
 from shaidra.utils.process import RunOptions, stream_lines
+from shaidra.utils.http import make_http_client
 from shaidra.utils.rate_limiter import RateLimiter
 
 STAGE: Final[str] = "API scan"
@@ -112,7 +113,7 @@ async def _probe_all(ctx: ScanContext, bus: EventBus, targets: list[str], limite
     total = len(targets) * len(_PROBES)
     current = 0
     found = 0
-    async with httpx.AsyncClient(follow_redirects=False, timeout=TIMEOUT_SECONDS) as client:
+    async with make_http_client(ctx, follow_redirects=False, timeout=TIMEOUT_SECONDS) as client:
         for base in targets:
             for probe in _PROBES:
                 current += 1

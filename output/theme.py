@@ -1,8 +1,17 @@
 """Brand palette and semantic severity colors for all terminal output.
 
-Brand purple is used only for chrome: banner, borders, progress bars, and
-section labels. Severity colors are semantic and must never be replaced by
-brand colors, so a CRITICAL finding always reads red regardless of theme.
+Two color systems are used on purpose:
+
+* **Chrome** (banner, borders, rules, section labels) uses the brand's fixed
+  dark-purple hex. Purple is a *dark* hue, so it stays legible on both light and
+  dark backgrounds, and Rich downgrades it automatically on 256/16-color
+  terminals. It is deliberately purple - never magenta/pink.
+* **Body text** uses the terminal's default foreground so it can never clash
+  with the user's background. Severity uses named ANSI colors so the terminal's
+  own palette keeps them readable on light or dark themes.
+
+Severity colors are semantic and must never be replaced by brand colors, so a
+CRITICAL finding always reads red regardless of theme.
 """
 
 from __future__ import annotations
@@ -13,20 +22,22 @@ from rich.style import Style
 
 from shaidra.core.models import LogLevel, Severity
 
-BRAND_PRIMARY: Final[str] = "#6D28D9"
-BRAND_DARK: Final[str] = "#1A1025"
-BRAND_ACCENT: Final[str] = "#A78BFA"
-BRAND_MUTED: Final[str] = "#4A4458"
+BRAND_PRIMARY: Final[str] = "#6D28D9"  # dark purple
+BRAND_DARK: Final[str] = "#1A1025"  # near-black purple
+BRAND_ACCENT: Final[str] = "#8B5CF6"  # medium violet
+BRAND_MUTED: Final[str] = "#4A4458"  # dark grey-purple
 
-SEVERITY_CRITICAL: Final[str] = "#F03E3E"
-SEVERITY_HIGH: Final[str] = "#F76707"
-SEVERITY_MEDIUM: Final[str] = "#F5C518"
-SEVERITY_LOW: Final[str] = "#4DABF7"
-SEVERITY_INFO: Final[str] = "#868E96"
+SEVERITY_CRITICAL: Final[str] = "bright_red"
+SEVERITY_HIGH: Final[str] = "red"
+SEVERITY_MEDIUM: Final[str] = "yellow"
+SEVERITY_LOW: Final[str] = "cyan"
+SEVERITY_INFO: Final[str] = "bright_black"
 
-TEXT_PRIMARY: Final[str] = "#E5E1F0"
-TEXT_MUTED: Final[str] = "#9A93AC"
-TEXT_SUCCESS: Final[str] = "#37B24D"
+# ``default`` follows the terminal's foreground, so primary text never clashes
+# with the user's background color.
+TEXT_PRIMARY: Final[str] = "default"
+TEXT_MUTED: Final[str] = "bright_black"
+TEXT_SUCCESS: Final[str] = "green"
 
 SEVERITY_COLORS: Final[dict[Severity, str]] = {
     Severity.CRITICAL: SEVERITY_CRITICAL,
@@ -38,7 +49,7 @@ SEVERITY_COLORS: Final[dict[Severity, str]] = {
 }
 
 LOG_COLORS: Final[dict[LogLevel, str]] = {
-    LogLevel.INFO: BRAND_ACCENT,
+    LogLevel.INFO: "cyan",
     LogLevel.SUCCESS: TEXT_SUCCESS,
     LogLevel.WARN: SEVERITY_MEDIUM,
     LogLevel.ERROR: SEVERITY_CRITICAL,

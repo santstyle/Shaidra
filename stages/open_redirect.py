@@ -20,6 +20,7 @@ import httpx
 
 from shaidra.core.events import EventBus
 from shaidra.core.models import Category, Finding, ScanContext, Severity
+from shaidra.utils.http import make_http_client
 from shaidra.utils.rate_limiter import RateLimiter
 
 STAGE: Final[str] = "open_redirect"
@@ -77,7 +78,7 @@ async def run(ctx: ScanContext, bus: EventBus) -> None:
     await bus.stage_progress(STAGE, 0, len(probes))
     reported: set[tuple[str, str]] = set()
     found = 0
-    async with httpx.AsyncClient(follow_redirects=False, timeout=TIMEOUT_SECONDS) as client:
+    async with make_http_client(ctx, follow_redirects=False, timeout=TIMEOUT_SECONDS) as client:
         for current, probe in enumerate(probes, start=1):
             location = await _probe(client, limiter, probe)
             key = (probe.endpoint, probe.param.lower())

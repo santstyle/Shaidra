@@ -206,6 +206,7 @@ class ScanContext:
     form_targets: list[FormTarget] = field(default_factory=list)
     available_tools: dict[str, bool] = field(default_factory=dict)
     waf: str | None = None
+    request_headers: dict[str, str] = field(default_factory=dict)
     findings: list[Finding] = field(default_factory=list)
     start_time: float = 0.0
     web_reachable: bool = False

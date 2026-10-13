@@ -21,6 +21,7 @@ import httpx
 from shaidra.core.events import EventBus
 from shaidra.core.models import FormTarget, JsonValue, LogLevel, ScanContext
 from shaidra.utils.process import RunOptions, stream_lines
+from shaidra.utils.http import make_http_client
 from shaidra.utils.rate_limiter import RateLimiter
 
 STAGE_NAME: Final[str] = "Crawl"
@@ -53,6 +54,25 @@ _SPIDER_SKIP_EXT: Final[frozenset[str]] = frozenset({
     ".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
     ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".mp3", ".zip", ".gz", ".pdf",
 })
+# SPA/API targets expose most of their real routes in robots.txt, sitemap.xml
+# and JS bundles rather than in <a href>/<form>, so the built-in spider mines
+# those too — otherwise the web-vuln and redirect stages get nothing to probe.
+_ROBOTS_RULE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:allow|disallow)\s*:\s*(\S+)", re.IGNORECASE | re.MULTILINE
+)
+_ROBOTS_SITEMAP_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*sitemap\s*:\s*(\S+)", re.IGNORECASE | re.MULTILINE
+)
+_SITEMAP_LOC_RE: Final[re.Pattern[str]] = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>", re.IGNORECASE)
+_SCRIPT_SRC_RE: Final[re.Pattern[str]] = re.compile(
+    r"""<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']""", re.IGNORECASE
+)
+_SCRIPT_BODY_RE: Final[re.Pattern[str]] = re.compile(r"<script\b[^>]*>([\s\S]*?)</script>", re.IGNORECASE)
+_JS_PATH_RE: Final[re.Pattern[str]] = re.compile(
+    r"""["'`]((?:https?://|/)[A-Za-z0-9_\-./?=&%:~+#]{1,300})["'`]"""
+)
+_MAX_META_URLS: Final[int] = 150
+_MAX_JS_FILES: Final[int] = 12
 
 Crawler = Literal["katana", "gau", "waybackurls"]
 
@@ -99,16 +119,22 @@ async def _spider(ctx: ScanContext, bus: EventBus, seeds: Sequence[str]) -> list
     """Depth-limited same-origin crawler used when no external crawler exists.
 
     Fetches each seed and the in-scope HTML it links to, extracting href/src/
-    action targets so downstream stages see real application routes (login
-    pages, API docs, forms) instead of only the bare base URL. Every request
-    is throttled through RateLimiter and nothing is written to the target.
+    action targets, plus endpoints mined from robots.txt, sitemap.xml and
+    JavaScript (inline and linked bundles). This surfaces real application
+    routes and hidden parameters — not just the bare base URL — so the web-vuln
+    and redirect stages have something to test. Every request is throttled
+    through RateLimiter and nothing is written to the target.
     """
     limiter = RateLimiter(float(max(1, ctx.rate_limit)))
     discovered: dict[str, None] = {}
     frontier: list[tuple[str, int]] = [(seed, 0) for seed in seeds]
     seen_forms: set[tuple[str, str, tuple[str, ...]]] = set()
     fetched = 0
-    async with httpx.AsyncClient(follow_redirects=True, timeout=SPIDER_TIMEOUT, verify=False) as client:
+    js_fetched = 0
+    async with make_http_client(ctx, follow_redirects=True, timeout=SPIDER_TIMEOUT, verify=False) as client:
+        for meta_url in await _meta_urls(ctx, client, limiter, seeds):
+            if meta_url not in discovered:
+                frontier.append((meta_url, 1))
         while frontier and len(discovered) < MAX_URLS:
             url, depth = frontier.pop(0)
             if url in discovered:
@@ -127,7 +153,7 @@ async def _spider(ctx: ScanContext, bus: EventBus, seeds: Sequence[str]) -> list
                     body = response.text[:_SPIDER_BODY_CAP]
             except httpx.HTTPError:
                 continue
-            for reference in _extract_refs(body):
+            for reference in [*_extract_refs(body), *_inline_js_refs(body)]:
                 absolute = urljoin(url, reference)
                 if not _keep_url(absolute):
                     continue
@@ -135,6 +161,19 @@ async def _spider(ctx: ScanContext, bus: EventBus, seeds: Sequence[str]) -> list
                     continue
                 if absolute not in discovered:
                     frontier.append((absolute, depth + 1))
+            if js_fetched < _MAX_JS_FILES:
+                for reference in _script_srcs(body):
+                    if js_fetched >= _MAX_JS_FILES:
+                        break
+                    absolute = urljoin(url, reference)
+                    if not _kept_script(absolute) or not ctx.scope.in_scope(absolute):
+                        continue
+                    js_fetched += 1
+                    script = await _fetch_text(client, limiter, absolute)
+                    for mined in _js_refs(script):
+                        candidate = urljoin(absolute, mined)
+                        if _keep_url(candidate) and ctx.scope.in_scope(candidate) and candidate not in discovered:
+                            frontier.append((candidate, depth + 1))
             for query_url in _form_query_urls(url, body):
                 if not ctx.scope.in_scope(query_url):
                     continue
@@ -150,6 +189,92 @@ async def _spider(ctx: ScanContext, bus: EventBus, seeds: Sequence[str]) -> list
                 if len(ctx.form_targets) >= _MAX_FORMS:
                     break
     return list(discovered)[:MAX_URLS]
+
+
+async def _meta_urls(
+    ctx: ScanContext, client: httpx.AsyncClient, limiter: RateLimiter, seeds: Sequence[str]
+) -> list[str]:
+    """Collect candidate URLs from robots.txt and sitemap.xml for each seed.
+
+    robots.txt frequently lists disallowed (yet reachable) admin/API paths, and
+    sitemap.xml enumerates real pages — routes the HTML itself rarely links to.
+    Anything out of scope is dropped before it reaches the crawl frontier.
+    """
+    found: dict[str, None] = {}
+    for base in seeds:
+        root = base.rstrip("/") + "/"
+        robots = await _fetch_text(client, limiter, urljoin(root, "robots.txt"))
+        sitemaps = [urljoin(root, "sitemap.xml")]
+        if robots:
+            for match in _ROBOTS_RULE_RE.finditer(robots):
+                path = match.group(1).strip()
+                if not path or path == "*":
+                    continue
+                if path.startswith(("http://", "https://")):
+                    found[path] = None
+                elif path != "/":
+                    found[urljoin(root, path.lstrip("/"))] = None
+            sitemaps.extend(match.group(1).strip() for match in _ROBOTS_SITEMAP_RE.finditer(robots))
+        for sitemap in sitemaps:
+            for url in await _sitemap_urls(client, limiter, sitemap):
+                found[url] = None
+        if len(found) >= _MAX_META_URLS:
+            break
+    return [url for url in found if ctx.scope.in_scope(url)][:_MAX_META_URLS]
+
+
+async def _sitemap_urls(client: httpx.AsyncClient, limiter: RateLimiter, url: str) -> list[str]:
+    """Return the ``<loc>`` targets of a sitemap, or nothing if it is not one."""
+    body = await _fetch_text(client, limiter, url)
+    if not body or "<loc" not in body.lower():
+        return []
+    return [match.group(1).strip() for match in _SITEMAP_LOC_RE.finditer(body)]
+
+
+async def _fetch_text(client: httpx.AsyncClient, limiter: RateLimiter, url: str) -> str:
+    """Fetch a text asset (robots.txt, sitemap.xml, JS) under the body cap."""
+    await limiter.acquire()
+    try:
+        response = await client.get(url)
+    except httpx.HTTPError:
+        return ""
+    if response.status_code != 200 or len(response.content) > _SPIDER_BODY_CAP:
+        return ""
+    return response.text
+
+
+def _script_srcs(body: str) -> list[str]:
+    """Return the ``src`` targets of a page's ``<script>`` tags."""
+    return _SCRIPT_SRC_RE.findall(body)
+
+
+def _inline_js_refs(body: str) -> list[str]:
+    """Return endpoint-looking string literals from a page's inline scripts."""
+    refs: list[str] = []
+    for script in _SCRIPT_BODY_RE.findall(body):
+        refs.extend(_js_refs(script))
+    return refs
+
+
+def _js_refs(js_text: str) -> list[str]:
+    """Return quoted path/URL literals found in JavaScript source."""
+    if not js_text:
+        return []
+    refs: list[str] = []
+    for value in _JS_PATH_RE.findall(js_text):
+        target = value.strip()
+        if target in ("/", "//") or target.startswith("//"):
+            continue
+        refs.append(target)
+    return refs
+
+
+def _kept_script(url: str) -> bool:
+    """Keep same-origin JavaScript bundle URLs that :func:`_keep_url` drops."""
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return False
+    return parts.path.lower().endswith((".js", ".mjs"))
 
 
 def _form_query_urls(page_url: str, body: str) -> list[str]:

@@ -31,6 +31,7 @@ from shaidra.core.models import (
     ScanContext,
     Severity,
 )
+from shaidra.utils.http import make_http_client
 from shaidra.utils.rate_limiter import RateLimiter
 
 STAGE: Final[str] = "cors"
@@ -72,7 +73,7 @@ async def run(ctx: ScanContext, bus: EventBus) -> None:
     total = len(hosts) * len(PROBE_ORIGINS)
     current = 0
     found = 0
-    async with httpx.AsyncClient(follow_redirects=False, timeout=TIMEOUT_SECONDS) as client:
+    async with make_http_client(ctx, follow_redirects=False, timeout=TIMEOUT_SECONDS) as client:
         for host in hosts:
             best: _ProbeResult | None = None
             for origin in PROBE_ORIGINS:

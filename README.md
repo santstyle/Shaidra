@@ -17,14 +17,19 @@ without** external security tools installed.
   `misconfig`, `recon`, `redirect`, `secrets`, `takeover`, `webvuln`; select a
   subset with `--categories`.
 - **Built-in fallbacks** — when an external tool is missing, Shaidra uses its
-  own engine instead of skipping the stage: a same-origin spider that also
-  records HTML forms, wordlist probing, API/CMS/misconfiguration path checks, a
-  leaked-credential scanner, and form-aware web-vuln probes. The built-in
-  web-vuln engine submits both GET query strings and POST form fields to detect
-  reflected XSS, SQL injection, OS command injection, path traversal / LFI,
-  SSTI, and in-band XXE; it also flags state-changing forms with no anti-CSRF
-  token and confirms SSRF through an out-of-band callback listener — nothing
-  destructive is sent.
+  own engine instead of skipping the stage: subdomain enumeration from
+  Certificate Transparency logs (crt.sh, hackertarget) plus a DNS-wordlist
+  brute-force with a wildcard-DNS guard, a same-origin spider that records
+  HTML forms and also mines endpoints from `robots.txt`, `sitemap.xml`, and
+  JavaScript bundles (so JavaScript-driven apps are not missed), wordlist
+  probing, API/CMS/misconfiguration path checks, a leaked-credential scanner,
+  and form-aware web-vuln probes. The built-in web-vuln engine submits both GET
+  query strings and POST form fields to detect reflected XSS, SQL injection, OS
+  command injection, path traversal / LFI, SSTI, and in-band XXE; when a
+  dynamic endpoint exposes no parameter it seeds common names so the detectors
+  still have something to test. It also flags state-changing forms with no
+  anti-CSRF token and confirms SSRF through an out-of-band callback listener —
+  nothing destructive is sent.
 - **Scope enforcement** — discovered hosts outside your scope file are never
   actively scanned.
 - **Adaptive rate limiting** — 40 req/s by default, halved automatically when a
@@ -104,15 +109,15 @@ shaidra example.com -oJ --output-dir out --output-name my-run
 
 | Stage | What it does |
 | ----- | ------------ |
-| `recon` | Live-host probing; subdomain enumeration with available tools |
-| `crawl` | URL discovery feeding the webvuln and redirect stages (katana/archives, or the built-in spider) |
+| `recon` | Live-host probing; subdomain enumeration via available tools, or built-in Certificate Transparency lookups + DNS wordlist brute-force |
+| `crawl` | URL discovery feeding the webvuln and redirect stages (katana/archives, or the built-in spider, which also mines robots.txt, sitemap.xml, and JavaScript) |
 | `content` | Content discovery via ffuf/feroxbuster, or built-in wordlist probing |
 | `api` | Probes Swagger/OpenAPI, GraphQL, Actuator, and OpenID paths |
 | `cms` | Fingerprints WordPress/Drupal/Joomla/Magento and runs their checks |
 | `misconfig` | Sensitive files and misconfiguration probes |
 | `cors` | Tests for permissive / reflected-origin CORS policies |
 | `jwt` | Inspects JWT tokens found while crawling |
-| `webvuln` | nuclei templates + dalfox XSS, or built-in form-aware XSS / SQLi / command-injection / LFI / SSTI / XXE probes, anti-CSRF token checks, and out-of-band SSRF confirmation |
+| `webvuln` | nuclei templates + dalfox XSS, or built-in form-aware XSS / SQLi / command-injection / LFI / SSTI / XXE probes with common-parameter seeding for parameter-less endpoints, anti-CSRF token checks, and out-of-band SSRF confirmation |
 | `redirect` | Open-redirect checks on crawled parameterized URLs |
 | `takeover` | Subdomain takeover fingerprints on discovered hostnames |
 | `cve` | Maps detected software versions to known CVEs |
@@ -133,6 +138,10 @@ credentials in `config.yaml`; read secrets from environment variables.
 ## Safety guardrails
 
 - Discovery results outside your scope file are excluded from active scanning.
+- The built-in subdomain enumeration queries third-party Certificate
+  Transparency services (crt.sh, hackertarget) with a bare client, so target
+  auth headers (`--cookie` / `-H`) are never sent to them; only the target's
+  own hostnames are used.
 - The rate limit defaults to 40 req/s and is halved automatically when a WAF is
   detected.
 - Built-in web-vuln checks are non-destructive: reflection markers, shell echo

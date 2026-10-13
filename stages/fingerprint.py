@@ -19,6 +19,7 @@ import httpx
 from shaidra.core.events import EventBus
 from shaidra.core.models import Host, LogLevel, ScanContext
 from shaidra.utils.process import RunOptions, run_tool
+from shaidra.utils.http import make_http_client
 from shaidra.utils.rate_limiter import RateLimiter
 
 STAGE: Final[str] = "fingerprint"
@@ -51,7 +52,7 @@ async def run(ctx: ScanContext, bus: EventBus) -> None:
     sem = asyncio.Semaphore(FETCH_CONCURRENCY)
     done = 0
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=FETCH_TIMEOUT, verify=False) as client:
+    async with make_http_client(ctx, follow_redirects=True, timeout=FETCH_TIMEOUT, verify=False) as client:
 
         async def process(host: Host) -> None:
             nonlocal done

@@ -12,6 +12,7 @@ import asyncio
 import html as html_lib
 import json
 import re
+from pathlib import Path
 from typing import Final
 from urllib.parse import urlsplit
 
@@ -20,6 +21,7 @@ import httpx
 from shaidra.core.events import EventBus
 from shaidra.core.models import Category, Finding, Host, LogLevel, ScanContext, Severity
 from shaidra.utils.process import RunOptions, run_tool, stream_lines
+from shaidra.utils.http import make_http_client
 from shaidra.utils.rate_limiter import RateLimiter
 
 STAGE: Final[str] = "recon"
@@ -38,6 +40,12 @@ _ADMIN_PORTS: Final[dict[int, str]] = {
     2375: "Docker API",
     5900: "VNC",
 }
+_CRT_SH_URL: Final[str] = "https://crt.sh/"
+_HACKERTARGET_URL: Final[str] = "https://api.hackertarget.com/hostsearch/"
+_CRT_TIMEOUT: Final[float] = 25.0
+_DNS_TIMEOUT: Final[float] = 5.0
+_BUILTIN_ENUM_CONCURRENCY: Final[int] = 30
+_WILDCARD_PROBE_LABEL: Final[str] = "shaidra-wildcard-probe-9f3a1c"
 
 
 async def run(ctx: ScanContext, bus: EventBus) -> None:
@@ -113,19 +121,154 @@ async def _enumerate_subdomains(ctx: ScanContext, bus: EventBus, base: str) -> l
         argvs.append(["subfinder", "-d", base, "-silent"])
     if ctx.has_tool("assetfinder"):
         argvs.append(["assetfinder", "--subs-only", base])
-    if not argvs:
-        await bus.log("Neither subfinder nor assetfinder installed; only the target host will be probed.", LogLevel.WARN)
-        return []
-    results = await asyncio.gather(*(run_tool(argv, RunOptions(timeout=_tool_timeout(ctx, argv[0]))) for argv in argvs))
-    merged: set[str] = set()
-    for result in results:
-        if not result.ok:
-            await bus.log(f"{result.tool} failed (rc={result.returncode}): {result.stderr.strip()}", LogLevel.WARN)
-            continue
-        merged.update(line.strip() for line in result.stdout.splitlines() if line.strip())
+    if argvs:
+        results = await asyncio.gather(*(run_tool(argv, RunOptions(timeout=_tool_timeout(ctx, argv[0]))) for argv in argvs))
+        merged: set[str] = set()
+        for result in results:
+            if not result.ok:
+                await bus.log(f"{result.tool} failed (rc={result.returncode}): {result.stderr.strip()}", LogLevel.WARN)
+                continue
+            merged.update(line.strip() for line in result.stdout.splitlines() if line.strip())
+    else:
+        merged = await _enumerate_builtin(ctx, bus, base)
     scoped = sorted(name for name in merged if ctx.scope.in_scope(name))
     await bus.log(f"Subdomain enumeration found {len(scoped)} in-scope candidate(s).")
     return scoped
+
+
+async def _enumerate_builtin(ctx: ScanContext, bus: EventBus, base: str) -> set[str]:
+    """Built-in subdomain discovery: Certificate Transparency logs + DNS brute force.
+
+    Used only when subfinder/assetfinder are absent so a bare hostname still
+    yields subdomains. CT-log names come from a third party (crt.sh) and are
+    fetched with a bare client so no target auth headers leak; the DNS
+    brute-force is skipped when the domain answers wildcard DNS, since every
+    label would then falsely "resolve".
+    """
+    await bus.log(
+        "No subdomain enumeration tool installed; using built-in enumeration (Certificate Transparency + DNS wordlist).",
+        LogLevel.WARN,
+    )
+    found: set[str] = set()
+    found.update(await _crt_sh_names(base))
+    found.update(await _hackertarget_names(base))
+    if await _has_wildcard_dns(base):
+        await bus.log(
+            f"{base} answers a random label (wildcard DNS); DNS brute-force skipped to avoid false positives.",
+            LogLevel.WARN,
+        )
+    else:
+        found.update(await _dns_brute(base, ctx.config.wordlist_subdomains))
+    return found
+
+
+async def _crt_sh_names(base: str) -> set[str]:
+    """Return hostnames under `base` from Certificate Transparency logs."""
+    names: set[str] = set()
+    bare = base.casefold()
+    try:
+        async with httpx.AsyncClient(timeout=_CRT_TIMEOUT, headers={"User-Agent": "shaidra"}) as client:
+            resp = await client.get(_CRT_SH_URL, params={"q": f"%.{base}", "output": "json"})
+            if resp.status_code != 200:
+                return names
+            raw = resp.json()
+    except (httpx.HTTPError, ValueError):
+        return names
+    if not isinstance(raw, list):
+        return names
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        value = entry.get("name_value")
+        if not isinstance(value, str):
+            continue
+        for line in value.splitlines():
+            name = line.strip().lstrip("*.").casefold()
+            if name == bare or name.endswith("." + bare):
+                names.add(name)
+    return names
+
+
+async def _hackertarget_names(base: str) -> set[str]:
+    """Return hostnames under `base` from the hackertarget host-search API."""
+    names: set[str] = set()
+    bare = base.casefold()
+    try:
+        async with httpx.AsyncClient(timeout=_CRT_TIMEOUT, headers={"User-Agent": "shaidra"}) as client:
+            resp = await client.get(_HACKERTARGET_URL, params={"q": base})
+            if resp.status_code != 200:
+                return names
+            body = resp.text
+    except httpx.HTTPError:
+        return names
+    for line in body.splitlines():
+        name = line.split(",", 1)[0].strip().casefold()
+        if name and (name == bare or name.endswith("." + bare)):
+            names.add(name)
+    return names
+
+
+async def _dns_brute(base: str, configured: str) -> set[str]:
+    """Resolve each wordlist label under `base`; return the names that resolve."""
+    words = _load_subdomain_labels(configured)
+    if not words:
+        return set()
+    sem = asyncio.Semaphore(_BUILTIN_ENUM_CONCURRENCY)
+    found: set[str] = set()
+
+    async def check(word: str) -> None:
+        name = f"{word}.{base}"
+        async with sem:
+            if await _resolves(name):
+                found.add(name)
+
+    await asyncio.gather(*(check(word) for word in words), return_exceptions=True)
+    return found
+
+
+async def _has_wildcard_dns(base: str) -> bool:
+    """Return True when a random label under `base` resolves (wildcard DNS)."""
+    return await _resolves(f"{_WILDCARD_PROBE_LABEL}.{base}")
+
+
+async def _resolves(name: str) -> bool:
+    """Return True when `name` resolves to at least one address."""
+    loop = asyncio.get_running_loop()
+    try:
+        infos = await asyncio.wait_for(loop.getaddrinfo(name, None), timeout=_DNS_TIMEOUT)
+    except (OSError, asyncio.TimeoutError):
+        return False
+    return bool(infos)
+
+
+def _load_subdomain_labels(configured: str) -> list[str]:
+    """Read subdomain labels from the first existing wordlist, or return []."""
+    path = _resolve_subdomain_wordlist(configured)
+    if path is None:
+        return []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    return [line.strip() for line in text.splitlines() if line.strip() and not line.startswith("#")]
+
+
+def _resolve_subdomain_wordlist(configured: str) -> Path | None:
+    """Return the first existing subdomain wordlist, or None when none exist."""
+    requested = Path(configured)
+    package_root = Path(__file__).resolve().parent.parent
+    if requested.is_absolute():
+        candidates = [requested]
+    else:
+        candidates = [
+            Path.cwd() / requested,
+            package_root / requested,
+            package_root / "wordlists" / requested.name,
+        ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _tool_timeout(ctx: ScanContext, tool: str) -> float:
@@ -181,7 +324,7 @@ async def _probe_with_python_httpx(ctx: ScanContext, bus: EventBus, candidates: 
     results: list[Host] = []
     done = 0
 
-    async with httpx.AsyncClient(follow_redirects=True, timeout=FALLBACK_TIMEOUT, verify=False) as client:
+    async with make_http_client(ctx, follow_redirects=True, timeout=FALLBACK_TIMEOUT, verify=False) as client:
 
         async def probe(candidate: Host) -> None:
             nonlocal done

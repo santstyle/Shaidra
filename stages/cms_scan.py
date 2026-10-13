@@ -28,6 +28,7 @@ import httpx
 from shaidra.core.events import EventBus
 from shaidra.core.models import Category, Finding, JsonValue, LogLevel, ScanContext, Severity
 from shaidra.utils.process import RunOptions, run_tool
+from shaidra.utils.http import make_http_client
 from shaidra.utils.rate_limiter import RateLimiter
 
 STAGE: Final[str] = "CMS scan"
@@ -59,7 +60,7 @@ async def run(ctx: ScanContext, bus: EventBus) -> None:
     limiter = RateLimiter(float(max(1, ctx.rate_limit)))
     detected = 0
     wpscan_ready = ctx.has_tool("wpscan")
-    async with httpx.AsyncClient(follow_redirects=True, timeout=TIMEOUT_SECONDS) as client:
+    async with make_http_client(ctx, follow_redirects=True, timeout=TIMEOUT_SECONDS) as client:
         for base in targets:
             families = await _fingerprint(client, limiter, base)
             if not families:

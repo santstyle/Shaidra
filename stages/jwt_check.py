@@ -29,6 +29,7 @@ import httpx
 from shaidra.core.events import EventBus
 from shaidra.core.models import Category, Finding, JsonValue, ScanContext, Severity
 from shaidra.utils.process import RunOptions, run_tool
+from shaidra.utils.http import make_http_client
 from shaidra.utils.rate_limiter import RateLimiter
 
 STAGE: Final[str] = "JWT"
@@ -111,7 +112,7 @@ async def _discover(ctx: ScanContext, bus: EventBus, limiter: RateLimiter) -> li
     """Fetch every in-scope base URL and collect JWT-shaped header values."""
     bases = _in_scope_bases(ctx)
     hits: list[_JwtHit] = []
-    async with httpx.AsyncClient(follow_redirects=True, timeout=FETCH_TIMEOUT) as client:
+    async with make_http_client(ctx, follow_redirects=True, timeout=FETCH_TIMEOUT) as client:
         for base in bases:
             await limiter.acquire()
             try:

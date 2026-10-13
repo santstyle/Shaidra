@@ -18,6 +18,7 @@ import httpx
 from shaidra.core.events import EventBus
 from shaidra.core.models import Category, Finding, Host, JsonValue, ScanContext, Severity
 from shaidra.utils.process import RunOptions, run_tool, stream_lines
+from shaidra.utils.http import make_http_client
 from shaidra.utils.rate_limiter import RateLimiter
 
 STAGE_NAME: Final[str] = "Misconfiguration"
@@ -174,7 +175,7 @@ async def _probe_exposures(ctx: ScanContext, bus: EventBus, bases: Sequence[str]
     total = len(bases) * len(_EXPOSURE_PATHS)
     requests = 0
     found = 0
-    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, follow_redirects=False) as client:
+    async with make_http_client(ctx, timeout=_HTTP_TIMEOUT, follow_redirects=False) as client:
         for base in bases:
             host = urlsplit(base).hostname or ctx.target
             for path in _EXPOSURE_PATHS:

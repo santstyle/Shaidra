@@ -19,6 +19,7 @@ import httpx
 from shaidra.core.events import EventBus
 from shaidra.core.models import Category, Finding, JsonValue, LogLevel, ScanContext, Severity
 from shaidra.utils.process import RunOptions, run_tool, stream_lines
+from shaidra.utils.http import make_http_client
 from shaidra.utils.rate_limiter import RateLimiter
 from shaidra.stages.misconfig import is_known_exposure
 
@@ -144,7 +145,7 @@ async def _own_hits(ctx: ScanContext, wordlist: Path, bus: EventBus) -> list[_Hi
     limiter = RateLimiter(float(max(1, ctx.rate_limit)))
     hits: list[_Hit] = []
     base = ctx.target_url.rstrip("/")
-    async with httpx.AsyncClient(follow_redirects=False, timeout=_OWN_TIMEOUT) as client:
+    async with make_http_client(ctx, follow_redirects=False, timeout=_OWN_TIMEOUT) as client:
         for index in range(budget):
             if len(hits) >= _MAX_HITS:
                 break
