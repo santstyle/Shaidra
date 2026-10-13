@@ -8,6 +8,8 @@ absent.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from typing import Final
 
 import httpx
@@ -49,13 +51,35 @@ async def detect_waf(ctx: ScanContext, bus: EventBus) -> str | None:
 
 
 async def _via_wafw00f(ctx: ScanContext) -> str | None:
-    argv = ["wafw00f", ctx.target_url, "-f", "json", "-o", "-"]
-    options = RunOptions(timeout=ctx.config.timeout_for("wafw00f", _WAFW00F_TIMEOUT))
-    result = await run_tool(argv, options)
-    stdout = result.stdout.strip()
-    if not stdout:
-        return None
-    return _parse_wafw00f(stdout)
+    """Run wafw00f, reading its JSON report from a temp file.
+
+    wafw00f's ``-o -`` (write to stdout) does not work on Windows — it creates a
+    file named ``-`` in the working directory and leaves stdout empty — so the
+    report is always written to a temp file and read back from there.
+    """
+    handle, report = tempfile.mkstemp(prefix="shaidra-wafw00f-", suffix=".json")
+    os.close(handle)
+    try:
+        argv = ["wafw00f", ctx.target_url, "-f", "json", "-o", report]
+        options = RunOptions(timeout=ctx.config.timeout_for("wafw00f", _WAFW00F_TIMEOUT))
+        result = await run_tool(argv, options)
+        stdout = _read_report(report).strip() or result.stdout.strip()
+        if not stdout:
+            return None
+        return _parse_wafw00f(stdout)
+    finally:
+        try:
+            os.remove(report)
+        except OSError:
+            pass
+
+
+def _read_report(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    except OSError:
+        return ""
 
 
 def _parse_wafw00f(stdout: str) -> str | None:

@@ -341,24 +341,35 @@ async def _probe_with_python_httpx(ctx: ScanContext, bus: EventBus, candidates: 
 
 
 async def _single_probe(client: httpx.AsyncClient, candidate: Host, default_scheme: str) -> Host | None:
-    """GET one candidate URL; return an enriched live Host or None on failure."""
-    url = candidate.url or f"{default_scheme}://{candidate.host}"
-    try:
-        resp = await client.get(url)
-    except httpx.HTTPError:
-        return None
-    return Host(
-        host=candidate.host,
-        url=str(resp.url),
-        status_code=resp.status_code,
-        title=_extract_title(resp.text),
-        server=resp.headers.get("server"),
-        content_length=len(resp.content),
-        scheme=resp.url.scheme,
-        port=resp.url.port,
-        is_live=True,
-        source="httpx-fallback",
-    )
+    """GET one candidate URL; return an enriched live Host or None on failure.
+
+    A discovered subdomain carries only its name, so it is tried with the
+    target's scheme first and then the opposite one — a host that serves only
+    plain HTTP (or only HTTPS) would otherwise be written off as dead.
+    """
+    if candidate.url:
+        urls = [candidate.url]
+    else:
+        alternate = "http" if default_scheme == "https" else "https"
+        urls = [f"{default_scheme}://{candidate.host}", f"{alternate}://{candidate.host}"]
+    for url in urls:
+        try:
+            resp = await client.get(url)
+        except httpx.HTTPError:
+            continue
+        return Host(
+            host=candidate.host,
+            url=str(resp.url),
+            status_code=resp.status_code,
+            title=_extract_title(resp.text),
+            server=resp.headers.get("server"),
+            content_length=len(resp.content),
+            scheme=resp.url.scheme,
+            port=resp.url.port,
+            is_live=True,
+            source="httpx-fallback",
+        )
+    return None
 
 
 def _host_from_httpx_line(line: str) -> Host | None:

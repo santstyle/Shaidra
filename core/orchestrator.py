@@ -43,6 +43,7 @@ from shaidra.stages import (
     webvuln,
 )
 from shaidra.utils.process import check_tools
+from shaidra.utils.tool_install import ensure_on_path
 
 StageCall = Callable[[ScanContext, EventBus], Awaitable[None]]
 
@@ -108,10 +109,13 @@ async def orchestrate(ctx: ScanContext, bus: EventBus) -> None:
 
 async def _preflight(ctx: ScanContext, bus: EventBus) -> None:
     await bus.stage_start("Preflight")
+    ensure_on_path()
     ctx.available_tools = check_tools(KNOWN_TOOLS)
     found = sorted(name for name, ok in ctx.available_tools.items() if ok)
     missing = sorted(name for name, ok in ctx.available_tools.items() if not ok)
     await bus.log(f"tools available: {len(found)}/{len(KNOWN_TOOLS)}")
+    if missing:
+        await bus.log(f"{len(missing)} tool(s) missing; install them with `shaidra --install-tools`")
     if ctx.verbose and missing:
         await bus.log(f"missing tools: {', '.join(missing)}")
     ctx.waf = await detect_waf(ctx, bus)

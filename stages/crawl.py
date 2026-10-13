@@ -10,6 +10,7 @@ downstream stages depend on this stage producing input.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 from collections.abc import Sequence
@@ -83,15 +84,18 @@ async def run(ctx: ScanContext, bus: EventBus) -> None:
     seeds = _base_urls(ctx)
     tools = _select_tools(ctx)
     raw = list(seeds)
-    if not tools:
-        if ctx.web_reachable:
+    if ctx.web_reachable:
+        if not tools:
             await bus.log(
                 "No crawler installed (katana, gau, waybackurls); using built-in spider",
                 LogLevel.WARN,
             )
-            raw = list(await _spider(ctx, bus, seeds))
-        else:
-            await bus.log("No crawler installed (katana, gau, waybackurls); base URLs only", LogLevel.WARN)
+        # The built-in spider always runs alongside external crawlers: archive
+        # tools only replay historical URLs and never walk the live site, so
+        # without it a target with no archive history would yield just the seed.
+        raw = list(await _spider(ctx, bus, seeds))
+    elif not tools:
+        await bus.log("No crawler installed (katana, gau, waybackurls); base URLs only", LogLevel.WARN)
     for index, tool in enumerate(tools, start=1):
         raw.extend(await _collect(ctx, tool))
         await bus.stage_progress(STAGE_NAME, index, len(tools))
@@ -104,15 +108,32 @@ async def run(ctx: ScanContext, bus: EventBus) -> None:
 
 
 def _select_tools(ctx: ScanContext) -> list[Crawler]:
-    """Pick katana plus the preferred archive source (gau, else waybackurls)."""
+    """Pick katana plus the preferred archive source (gau, else waybackurls).
+
+    Archive tools (gau, waybackurls) only index public web history, so they are
+    skipped for bare IP targets — where they would stall on a query that can
+    never return anything.
+    """
     tools: list[Crawler] = []
     if ctx.has_tool("katana"):
         tools.append("katana")
+    if _target_is_ip(ctx):
+        return tools
     if ctx.has_tool("gau"):
         tools.append("gau")
     elif ctx.has_tool("waybackurls"):
         tools.append("waybackurls")
     return tools
+
+
+def _target_is_ip(ctx: ScanContext) -> bool:
+    """Return whether the scan target is a bare IP address rather than a host."""
+    host = urlsplit(ctx.target_url).hostname or ctx.target
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
 
 
 async def _spider(ctx: ScanContext, bus: EventBus, seeds: Sequence[str]) -> list[str]:

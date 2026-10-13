@@ -56,6 +56,19 @@ missing ones are replaced by the built-in fallback. Supported tools:
 `nuclei`, `dalfox`, `sqlmap`, `ffuf`, `feroxbuster`, `wpscan`, `testssl.sh`,
 `kiterunner`, `gowitness`, `wafw00f`, `whatweb`, `jwt_tool`, `subjack`.
 
+Prefer the external tools? Let Shaidra fetch them for you:
+
+```bash
+shaidra --install-tools                 # install every missing tool, then exit
+shaidra --install-tools example.com     # install first, then run the scan
+```
+
+Installs land in a per-user directory (`%LOCALAPPDATA%\shaidra\bin` on
+Windows, `~/.local/share/shaidra/bin` elsewhere) and need no admin rights.
+Shaidra adds that directory to `PATH` for the current run, so downloads are
+usable immediately. Release binaries are pulled from each project's GitHub
+releases (with a `go install` fallback when Go is available).
+
 ## Quick start
 
 ```bash
@@ -96,6 +109,7 @@ shaidra [OPTIONS] TARGET
 | `-o, --output FMT` | Report format(s): `J`, `M`, `T`, `A` (repeatable) |
 | `--output-dir DIR` | Directory for report files |
 | `--output-name NAME` | Base name for report files |
+| `--install-tools` | Download and install missing external tools into a per-user bin dir (no admin needed) |
 | `--version` | Show the version and exit |
 
 ### Reports

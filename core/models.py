@@ -201,6 +201,7 @@ class ScanContext:
     config: Config
     verbose: bool = False
     quiet: bool = False
+    install_tools: bool = False
     hosts: dict[str, Host] = field(default_factory=dict)
     crawled_urls: list[str] = field(default_factory=list)
     form_targets: list[FormTarget] = field(default_factory=list)

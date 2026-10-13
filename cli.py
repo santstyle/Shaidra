@@ -25,11 +25,12 @@ from shaidra.aggregator.severity import findings_by_severity
 from shaidra.core.config import Config, load_config
 from shaidra.core.events import EventBus
 from shaidra.core.models import ALL_CATEGORIES, Category, ScanContext
-from shaidra.core.orchestrator import orchestrate
+from shaidra.core.orchestrator import KNOWN_TOOLS, orchestrate
 from shaidra.core.scope import ScopeError, build_scope, parse_target
 from shaidra.output.banner import render_banner
 from shaidra.output.report import write_reports
 from shaidra.output.terminal import TerminalRenderer
+from shaidra.utils.tool_install import ensure_on_path, install_missing
 
 _ERROR_STYLE = "red"
 
@@ -123,6 +124,7 @@ def main(
     threads: Annotated[int | None, typer.Option("--threads", min=1, help="Concurrency for fuzzing tools.")] = None,
     mode: Annotated[str | None, typer.Option("--mode", "-m", help="Scan mode: quick or deep.")] = None,
     extended: Annotated[bool, typer.Option("--extended", "-x", help="Enable heavy checks (screenshots, full wordlists).")] = False,
+    install_tools: Annotated[bool, typer.Option("--install-tools", help="Download and install missing external tools before scanning (or alone, without a target).")] = False,
     config_path: Annotated[str | None, typer.Option("--config", help="Path to a config.yaml file.")] = None,
     cookie: Annotated[str | None, typer.Option("--cookie", help="Session cookie sent with every request, e.g. \"session=abc123\".")] = None,
     header: Annotated[list[str], typer.Option("--header", "-H", help="Extra request header \"Name: value\" (repeatable).")] = [],
@@ -139,6 +141,10 @@ def main(
     """Run a scan against TARGET and stream findings to the terminal."""
     _harden_streams()
     console = _make_console()
+
+    if install_tools and not (target and target.strip()):
+        asyncio.run(_install_only(console))
+        raise typer.Exit()
 
     prompted = False
     raw_target = target.strip() if target else ""
@@ -173,6 +179,7 @@ def main(
         request_headers=request_headers,
         verbose=verbose,
         quiet=quiet,
+        install_tools=install_tools,
     )
 
     if not quiet and not prompted:
@@ -193,6 +200,9 @@ async def _run_scan(ctx: ScanContext, console: Console, *, formats: set[str], ou
     renderer.start()
     consumer = asyncio.create_task(renderer.consume(bus, ctx))
     try:
+        if ctx.install_tools:
+            ensure_on_path()
+            await install_missing(KNOWN_TOOLS, _bus_notify(bus))
         await orchestrate(ctx, bus)
     finally:
         await consumer
@@ -202,6 +212,25 @@ async def _run_scan(ctx: ScanContext, console: Console, *, formats: set[str], ou
     duration = time.monotonic() - ctx.start_time
     report_paths = _write_reports(ctx, console, formats=formats, outdir=outdir, base_name=base_name)
     renderer.print_summary(ctx, duration, report_paths)
+
+
+def _bus_notify(bus: EventBus):
+    """Adapt the event bus into the installer's async ``notify`` callback."""
+
+    async def notify(message: str) -> None:
+        await bus.log(message)
+
+    return notify
+
+
+async def _install_only(console: Console) -> None:
+    """Install missing tools without running a scan (``shaidra --install-tools``)."""
+    ensure_on_path()
+
+    async def notify(message: str) -> None:
+        console.print(f"[*] {message}", markup=False, style="bright_black")
+
+    await install_missing(KNOWN_TOOLS, notify)
 
 
 def _write_reports(

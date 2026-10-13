@@ -59,6 +59,7 @@ class _Rule:
     reference: str | None = None
     group: int = 0
     entropy_checked: bool = False
+    luhn_checked: bool = False
 
 
 def _compile(pattern: str, flags: int = 0) -> re.Pattern[str]:
@@ -221,11 +222,26 @@ _RULES: Final[tuple[_Rule, ...]] = (
         "A Firebase Realtime Database URL is exposed.",
     ),
     _Rule(
+        "US Social Security Number", Severity.MEDIUM,
+        _compile(r"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)"),
+        "A US Social Security Number is exposed.",
+        "https://cwe.mitre.org/data/definitions/359.html",
+    ),
+    _Rule(
+        "Credit card number", Severity.HIGH,
+        _compile(r"(?<![\d-])(?:\d[ -]?){12,18}\d(?![\d-])"),
+        "A payment card number is exposed.",
+        "https://cwe.mitre.org/data/definitions/359.html",
+        luhn_checked=True,
+    ),
+    _Rule(
         "Inline credential assignment", Severity.MEDIUM,
         _compile(
-            r"(?i)\b(?:api[_-]?key|apikey|secret[_-]?key|client[_-]?secret|access[_-]?key|"
-            r"auth[_-]?token|access[_-]?token|private[_-]?key|password|passwd|pwd|token|secret)\b"
-            r"\s*[:=]\s*['\"]([A-Za-z0-9+/=_\-]{16,})['\"]"
+            r"(?i)(?:[A-Za-z0-9_.\-]*"
+            r"(?:password|passwd|pwd|secret|token|apikey|api[_-]?key|access[_-]?key|"
+            r"private[_-]?key|credential)"
+            r"[A-Za-z0-9_.\-]*)"
+            r"\s*['\"]?\s*[:=]\s*['\"]([^'\"\s]{12,})['\"]"
         ),
         "A credential-like key is assigned a high-entropy literal value.",
         group=1, entropy_checked=True,
@@ -235,7 +251,7 @@ _RULES: Final[tuple[_Rule, ...]] = (
         _compile(
             r"(?im)^\s*[A-Z][A-Z0-9_]*"
             r"(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|PWD|CREDENTIAL)"
-            r"[A-Z0-9_]*\s*=\s*([A-Za-z0-9+/=_\-]{16,})\s*$"
+            r"[A-Z0-9_]*\s*=\s*(\S{16,})\s*$"
         ),
         "A .env-style variable holds a high-entropy credential value.",
         group=1, entropy_checked=True,
@@ -284,7 +300,24 @@ def _plausible(value: str, rule: _Rule) -> bool:
             return False
         if _entropy(stripped) < _ENTROPY_FLOOR:
             return False
+    if rule.luhn_checked and not _luhn(stripped):
+        return False
     return True
+
+
+def _luhn(value: str) -> bool:
+    """Return True when ``value`` is a Luhn-valid card-like number."""
+    digits = [int(ch) for ch in value if ch.isdigit()]
+    if not 13 <= len(digits) <= 19:
+        return False
+    total = 0
+    for index, digit in enumerate(reversed(digits)):
+        if index % 2 == 1:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        total += digit
+    return total % 10 == 0
 
 
 def _entropy(value: str) -> float:
