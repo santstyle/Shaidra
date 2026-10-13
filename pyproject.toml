@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shaidra"
+version = "0.1.0"
+description = "Shaidra: a deep web vulnerability scanner CLI that orchestrates battle-tested recon and scanning tools into one parallel pipeline."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Shaidra" }]
+keywords = ["security", "vulnerability-scanner", "bug-bounty", "pentest", "recon"]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.7",
+    "PyYAML>=6.0",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+shaidra = "shaidra.cli:app"
+
+# The repository root IS the `shaidra` package (flat layout). package-dir maps
+# the installed package name onto this directory so `import shaidra` works
+# without a nested shaidra/ folder.
+[tool.setuptools]
+packages = ["shaidra", "shaidra.core", "shaidra.stages", "shaidra.aggregator", "shaidra.output", "shaidra.utils"]
+package-dir = { shaidra = "." }
+
+[tool.setuptools.package-data]
+shaidra = ["config.yaml", "wordlists/*.txt", "templates/*"]

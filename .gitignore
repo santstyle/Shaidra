@@ -1,0 +1,24 @@
+# Shaidra reports are written only when an -o flag is passed.
+reports/
+
+# Local secret-bearing config overrides (API keys, tokens, custom paths).
+config.local.yaml
+
+# Python build and cache artifacts.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling caches.
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Agent session state (may contain run transcripts).
+.omo/
+*.log

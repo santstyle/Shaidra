@@ -1,0 +1,39 @@
+# Shaidra default configuration.
+#
+# Resolution order (first found wins):
+#   1. $SHAIDRA_CONFIG environment variable (explicit path)
+#   2. ./config.yaml in the current working directory
+#   3. this file next to the installed package
+# Every key is optional; missing keys fall back to the built-in defaults.
+#
+# Never commit credentials here. Read secrets from environment variables
+# (for example SHAIDRA_NUCLEI_TOKEN) and reference them from your own config.
+
+rate_limit: 40          # requests per second; auto-lowered when a WAF is detected
+mode: quick             # quick | deep
+reports_dir: reports    # only used when an -o flag is passed
+ffuf_threads: 40        # ffuf concurrency
+katana_depth: 3         # crawl depth for katana
+waf_rate_limit_drop: 0.5  # multiplier applied to rate_limit when a WAF is present
+
+wordlists:
+  content: wordlists/common.txt
+  api: wordlists/api.txt
+
+# Per-tool execution timeouts in seconds.
+timeouts:
+  subfinder: 300
+  assetfinder: 300
+  httpx: 300
+  naabu: 600
+  katana: 600
+  nuclei: 900
+  dalfox: 600
+  sqlmap: 900
+  ffuf: 900
+  feroxbuster: 900
+  wpscan: 900
+  trufflehog: 600
+  testssl: 600
+  kiterunner: 600
+  gowitness: 600
