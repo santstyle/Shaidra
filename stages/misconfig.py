@@ -23,21 +23,79 @@ from shaidra.utils.rate_limiter import RateLimiter
 STAGE_NAME: Final[str] = "Misconfiguration"
 _HTTP_TIMEOUT: Final[float] = 10.0
 _MAX_HOSTS: Final[int] = 5
-_MAX_PROBE_REQUESTS: Final[int] = 90
-_MAX_FINDINGS: Final[int] = 30
+_MAX_PROBE_REQUESTS: Final[int] = 600
+_MAX_FINDINGS: Final[int] = 80
 _MAX_NUCLEI_FINDINGS: Final[int] = 30
 _MAX_TLS_FINDINGS: Final[int] = 5
 _BODY_CAP: Final[int] = 16384
 
 _EXPOSURE_PATHS: Final[tuple[str, ...]] = (
-    ".git/config", ".git/HEAD", ".env", ".env.local", ".htaccess", ".htpasswd",
-    "phpinfo.php", "info.php", "server-status", ".DS_Store", "backup.zip",
-    "backup.sql", "config.php~", "config.php.bak", "web.config", "Dockerfile",
-    ".svn/entries", "crossdomain.xml",
+    # Version control metadata (source-code disclosure)
+    ".git/config", ".git/HEAD", ".git/index", ".git/logs/HEAD", ".git/packed-refs",
+    ".git/COMMIT_EDITMSG", ".svn/entries", ".svn/wc.db", ".hg/requires", ".bzr/README",
+    # Environment files (leaked credentials)
+    ".env", ".env.local", ".env.dev", ".env.development", ".env.test", ".env.staging",
+    ".env.production", ".env.prod", ".env.backup", ".env.bak", ".env.old", ".env.save",
+    ".env.example", ".env.json", "env.json", "env.js",
+    # Configuration files
+    "config.json", "config.js", "config.php", "config.yml", "config.yaml", "settings.py",
+    "application.properties", "appsettings.json", "local.settings.json", "web.config",
+    "docker-compose.yml", "docker-compose.yaml", "Dockerfile",
+    # Credentials and private keys
+    "credentials.json", "serviceAccountKey.json", "service-account.json", "gcloud.json",
+    ".aws/credentials", ".aws/config", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+    ".ssh/id_rsa", ".ssh/id_ed25519", ".ssh/authorized_keys", ".npmrc",
+    ".dockercfg", ".docker/config.json", ".ftpconfig", ".remote-sync.json",
+    "terraform.tfstate", "terraform.tfstate.backup",
+    # WordPress
+    "wp-config.php", "wp-config.php.bak", "wp-config.php~", "wp-config.php.save",
+    "wp-config.php.old", "wp-config.txt", "wp-content/debug.log",
+    # Backups and database dumps
+    "backup.zip", "backup.tar.gz", "backup.tar", "backup.rar", "backup.7z",
+    "site.zip", "www.zip", "web.zip", "backup.sql", "database.sql", "dump.sql", "data.sql",
+    # Diagnostic and server files
+    "phpinfo.php", "info.php", ".htaccess", ".htpasswd", ".DS_Store", "Thumbs.db",
+    "server-status", "server-info", "crossdomain.xml", "clientaccesspolicy.xml",
+    # Framework debug endpoints and API descriptions
+    "actuator/env", "actuator/health", "actuator/httptrace", "swagger.json", "openapi.json",
+    # Dependency locks (version fingerprinting)
+    "package-lock.json", "composer.lock", "yarn.lock", "Gemfile.lock",
 )
 _HIGH_EXPOSURES: Final[frozenset[str]] = frozenset(
-    {".env", ".env.local", ".git/config", ".git/HEAD", ".htpasswd", "backup.sql", "config.php.bak"}
+    {
+        ".git/config", ".git/HEAD", ".git/index", ".git/logs/HEAD", ".git/packed-refs",
+        ".env", ".env.local", ".env.dev", ".env.development", ".env.test", ".env.staging",
+        ".env.production", ".env.prod", ".env.backup", ".env.bak", ".env.old", ".env.save",
+        ".env.json", "env.json",
+        "wp-config.php", "wp-config.php.bak", "wp-config.php~", "wp-config.php.save",
+        "wp-config.php.old", "wp-config.txt",
+        "credentials.json", "serviceAccountKey.json", "service-account.json", "gcloud.json",
+        ".aws/credentials", ".aws/config", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+        ".ssh/id_rsa", ".ssh/id_ed25519", ".npmrc", ".dockercfg", ".docker/config.json",
+        "terraform.tfstate", "terraform.tfstate.backup",
+        "backup.sql", "database.sql", "dump.sql", "data.sql", "backup.zip",
+        "backup.tar.gz", "backup.rar", "backup.7z", "site.zip", "www.zip", "web.zip",
+    }
 )
+_LOW_EXPOSURES: Final[frozenset[str]] = frozenset(
+    {
+        ".env.example", ".DS_Store", "Thumbs.db", "crossdomain.xml", "clientaccesspolicy.xml",
+        "Dockerfile", "package-lock.json", "composer.lock", "yarn.lock", "Gemfile.lock",
+    }
+)
+_KNOWN_EXPOSURES_NORM: Final[frozenset[str]] = frozenset(
+    path.strip("/").lower() for path in _EXPOSURE_PATHS
+)
+
+
+def is_known_exposure(path: str) -> bool:
+    """Return whether a path is already covered by the verified exposure probe.
+
+    Content discovery uses this to avoid re-reporting the same file the
+    misconfig stage confirms with a content signature: the path-only
+    classifier here would otherwise raise a duplicate, weaker finding.
+    """
+    return path.strip("/").lower() in _KNOWN_EXPOSURES_NORM
 _HTACCESS_MARKERS: Final[tuple[str, ...]] = (
     "RewriteRule", "RewriteEngine", "Require ", "Order allow", "Deny from",
 )
@@ -45,13 +103,35 @@ _ENV_LINE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\s*=", r
 _HTPASSWD_LINE: Final[re.Pattern[str]] = re.compile(r"^[^\s:#][^:\s]*:.*$", re.MULTILINE)
 _ANSI: Final[re.Pattern[str]] = re.compile(r"\x1b\[[0-9;]*m")
 _TLS_PROTOCOL: Final[re.Pattern[str]] = re.compile(r"\b(SSLv[23]|TLS 1\.[01])\b")
+_GIT_SHA: Final[re.Pattern[str]] = re.compile(r"[0-9a-f]{40} ")
+_YAML_KV: Final[re.Pattern[str]] = re.compile(r"^\s*[\w.-]+\s*:", re.MULTILINE)
+_ENV_PATHS: Final[frozenset[str]] = frozenset(
+    {
+        ".env", ".env.local", ".env.dev", ".env.development", ".env.test", ".env.staging",
+        ".env.production", ".env.prod", ".env.backup", ".env.bak", ".env.old", ".env.save",
+        ".env.example", ".env.json",
+    }
+)
+_SQL_MARKERS: Final[tuple[str, ...]] = (
+    "mysql dump", "postgresql database dump", "create table", "insert into", "-- mysql",
+)
+_ARCHIVE_MAGIC: Final[dict[str, bytes]] = {
+    "backup.zip": b"PK\x03\x04",
+    "site.zip": b"PK\x03\x04",
+    "www.zip": b"PK\x03\x04",
+    "web.zip": b"PK\x03\x04",
+    "backup.tar.gz": b"\x1f\x8b",
+    "backup.rar": b"Rar!\x1a\x07",
+    "backup.7z": b"7z\xbc\xaf\x27\x1c",
+}
+_HTML_PREFIXES: Final[tuple[str, ...]] = ("<!doctype", "<html", "<head", "<body")
 
 
 async def run(ctx: ScanContext, bus: EventBus) -> None:
     """Probe live hosts for exposed files, then run nuclei/testssl if present."""
-    await bus.stage_start(STAGE)
+    await bus.stage_start(STAGE_NAME)
     if not ctx.web_reachable:
-        await bus.stage_skip(STAGE, "target not reachable")
+        await bus.stage_skip(STAGE_NAME, "target not reachable")
         return
     bases = _in_scope_bases(ctx)
     if not bases:
@@ -103,14 +183,14 @@ async def _probe_exposures(ctx: ScanContext, bus: EventBus, bases: Sequence[str]
                 requests += 1
                 await bus.stage_progress(STAGE_NAME, requests, total)
                 await limiter.acquire()
-                status, body = await _bounded_get(client, f"{base}/{path}")
-                if not _confirmed(path, status, body):
+                status, body, ctype = await _bounded_get(client, f"{base}/{path}")
+                if not _confirmed(path, status, body, ctype):
                     continue
                 found += 1
                 await bus.finding(
                     Finding(
                         title=f"Exposed file: {path}",
-                        severity=Severity.HIGH if path in _HIGH_EXPOSURES else Severity.MEDIUM,
+                        severity=_severity_for_path(path),
                         category=Category.MISCONFIG,
                         host=host,
                         tool="shaidra",
@@ -123,44 +203,164 @@ async def _probe_exposures(ctx: ScanContext, bus: EventBus, bases: Sequence[str]
     return found
 
 
-async def _bounded_get(client: httpx.AsyncClient, url: str) -> tuple[int, bytes]:
+async def _bounded_get(client: httpx.AsyncClient, url: str) -> tuple[int, bytes, str]:
     try:
         async with client.stream("GET", url) as response:
+            ctype = response.headers.get("content-type", "")
             buffer = bytearray()
             async for chunk in response.aiter_bytes():
                 buffer.extend(chunk)
                 if len(buffer) >= _BODY_CAP:
                     break
-            return response.status_code, bytes(buffer)
+            return response.status_code, bytes(buffer), ctype
     except httpx.HTTPError:
-        return 0, b""
+        return 0, b"", ""
 
 
-def _confirmed(path: str, status: int, body: bytes) -> bool:
+def _severity_for_path(path: str) -> Severity:
+    if path in _HIGH_EXPOSURES:
+        return Severity.HIGH
+    if path in _LOW_EXPOSURES:
+        return Severity.LOW
+    return Severity.MEDIUM
+
+
+def _confirmed(path: str, status: int, body: bytes, ctype: str) -> bool:
     if status != 200 or not body:
         return False
     text = body.decode("utf-8", "replace")
-    match path:
-        case ".env" | ".env.local":
-            return not text.lstrip().startswith("<") and _ENV_LINE.search(text) is not None
-        case ".git/config": return "[core]" in text
-        case ".git/HEAD": return "ref: refs/heads/" in text
-        case ".htaccess": return any(marker in text for marker in _HTACCESS_MARKERS)
-        case ".htpasswd": return _HTPASSWD_LINE.search(text) is not None
-        case "phpinfo.php": return "phpinfo" in text.lower()
-        case "info.php": return "phpinfo" in text.lower() or "php version" in text.lower()
-        case "server-status": return "apache server status" in text.lower()
-        case ".DS_Store": return b"Bud1" in body[:32] or body[:4] == b"\x00\x00\x00\x01"
-        case "backup.zip": return body[:4] == b"PK\x03\x04"
-        case "backup.sql": return any(
-            marker in text.lower() for marker in ("mysql dump", "postgresql database dump", "sqlite", "create table")
+    low = text.lower()
+    stripped = text.lstrip()
+    is_html = "text/html" in ctype.lower() or stripped[:64].lower().startswith(_HTML_PREFIXES)
+
+    # --- Version control metadata ---
+    if path == ".git/config":
+        return "[core]" in text
+    if path == ".git/HEAD":
+        return "ref: refs/" in text
+    if path == ".git/index":
+        return body[:4] == b"DIRC"
+    if path == ".git/logs/HEAD":
+        return _GIT_SHA.search(text) is not None
+    if path == ".git/packed-refs":
+        return "# pack-refs" in text or "refs/heads" in text
+    if path == ".git/COMMIT_EDITMSG":
+        return not is_html and 3 < len(stripped) < 4000
+    if path == ".svn/entries":
+        return stripped[:3] in ("12\n", "10\n", "9\n", "8\n")
+    if path == ".svn/wc.db":
+        return body[:16] == b"SQLite format 3\x00"
+    if path == ".hg/requires":
+        return "revlog" in low
+    if path == ".bzr/README":
+        return "bzr" in low
+
+    # --- Environment files ---
+    if path in _ENV_PATHS or path == "env.json":
+        if is_html:
+            return False
+        if path.endswith(".json"):
+            return stripped.startswith("{")
+        return _ENV_LINE.search(text) is not None
+    if path == "env.js":
+        return not is_html and (
+            "api_key" in low or "secret" in low or "token" in low or _ENV_LINE.search(text) is not None
         )
-        case "config.php~" | "config.php.bak": return "<?php" in text
-        case "web.config": return "<configuration" in text.lower()
-        case "Dockerfile": return text.lstrip().upper().startswith("FROM ")
-        case ".svn/entries": return text.lstrip().startswith(("12\n", "10\n", "9\n"))
-        case "crossdomain.xml": return "cross-domain-policy" in text.lower()
-        case _: return False
+
+    # --- Configuration files ---
+    if path in ("config.json", "appsettings.json", "local.settings.json"):
+        return not is_html and stripped.startswith("{") and stripped.rstrip().endswith("}")
+    if path in ("config.yml", "config.yaml", "docker-compose.yml", "docker-compose.yaml"):
+        return not is_html and _YAML_KV.search(text) is not None
+    if path == "config.php":
+        return "<?php" in text
+    if path == "config.js":
+        return not is_html and ("module.exports" in text or "export " in text)
+    if path == "settings.py":
+        return not is_html and any(k in text.upper() for k in ("SECRET", "DATABASE", "PASSWORD"))
+    if path == "application.properties":
+        return not is_html and _ENV_LINE.search(text) is not None
+    if path == "web.config":
+        return "<configuration" in low
+    if path == "Dockerfile":
+        return stripped.upper().startswith("FROM ")
+
+    # --- Credentials and private keys ---
+    if path == "credentials.json":
+        return not is_html and stripped.startswith("{") and any(
+            k in low for k in ('"key"', "private_key", "client_email", "secret", "password")
+        )
+    if path in ("serviceAccountKey.json", "service-account.json", "gcloud.json"):
+        return not is_html and ("service_account" in low or "private_key" in low)
+    if path in (".aws/credentials", ".aws/config"):
+        return not is_html and ("aws_access_key_id" in low or "[default]" in low)
+    if path in ("id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", ".ssh/id_rsa", ".ssh/id_ed25519"):
+        return "private key" in low
+    if path == ".ssh/authorized_keys":
+        return "ssh-rsa" in low or "ssh-ed25519" in low
+    if path == ".npmrc":
+        return "_authtoken" in low or "registry" in low
+    if path in (".dockercfg", ".docker/config.json"):
+        return not is_html and "auths" in low
+    if path in (".ftpconfig", ".remote-sync.json"):
+        return not is_html and '"host"' in low
+    if path in ("terraform.tfstate", "terraform.tfstate.backup"):
+        return not is_html and ("terraform" in low or '"resources"' in low or '"serial"' in low)
+
+    # --- WordPress ---
+    if path == "wp-content/debug.log":
+        return not is_html and "php" in low and ("error" in low or "warning" in low or "notice" in low)
+    if path.startswith("wp-config"):
+        return "db_name" in low or "db_password" in low or "define(" in text
+
+    # --- Backups and database dumps ---
+    if path in _ARCHIVE_MAGIC:
+        return body.startswith(_ARCHIVE_MAGIC[path])
+    if path == "backup.tar":
+        return len(body) > 262 and body[257:262] in (b"ustar", b"ustar\x00")
+    if path.endswith(".sql"):
+        return any(marker in low for marker in _SQL_MARKERS)
+
+    # --- Diagnostic and server files ---
+    if path in ("phpinfo.php", "info.php"):
+        return "phpinfo" in low
+    if path == ".htaccess":
+        return any(marker in text for marker in _HTACCESS_MARKERS)
+    if path == ".htpasswd":
+        return _HTPASSWD_LINE.search(text) is not None
+    if path == ".DS_Store":
+        return body[:4] == b"\x00\x00\x00\x01" or b"Bud1" in body[:32]
+    if path == "Thumbs.db":
+        return body[:4] == b"\xd0\xcf\x11\xe0"
+    if path == "server-status":
+        return "apache server status" in low
+    if path == "server-info":
+        return "apache server information" in low
+    if path == "crossdomain.xml":
+        return "cross-domain-policy" in low
+    if path == "clientaccesspolicy.xml":
+        return "access-policy" in low
+
+    # --- Framework debug endpoints and API descriptions ---
+    if path == "actuator/env":
+        return not is_html and ("propertysources" in low or "activeprofiles" in low)
+    if path == "actuator/health":
+        return not is_html and '"status"' in low
+    if path == "actuator/httptrace":
+        return not is_html and '"traces"' in low
+    if path in ("swagger.json", "openapi.json"):
+        return not is_html and ('"swagger"' in low or '"openapi"' in low)
+
+    # --- Dependency locks ---
+    if path == "package-lock.json":
+        return not is_html and '"lockfileversion"' in low
+    if path == "composer.lock":
+        return not is_html and '"packages"' in low
+    if path == "yarn.lock":
+        return "# yarn lockfile" in low
+    if path == "Gemfile.lock":
+        return low.lstrip().startswith("gem ") or "\ngem " in low
+    return False
 
 
 async def _via_nuclei(ctx: ScanContext, bus: EventBus, bases: Sequence[str]) -> int:

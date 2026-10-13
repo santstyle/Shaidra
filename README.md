@@ -13,16 +13,18 @@ without** external security tools installed.
 
 - **Live parallel pipeline** — every stage runs concurrently with a real-time
   progress view and severity summary at the end.
-- **11 scan categories** — `api`, `cms`, `content`, `cors`, `cve`, `jwt`,
-  `misconfig`, `recon`, `redirect`, `takeover`, `webvuln`; select a subset
-  with `--categories`.
+- **12 scan categories** — `api`, `cms`, `content`, `cors`, `cve`, `jwt`,
+  `misconfig`, `recon`, `redirect`, `secrets`, `takeover`, `webvuln`; select a
+  subset with `--categories`.
 - **Built-in fallbacks** — when an external tool is missing, Shaidra uses its
   own engine instead of skipping the stage: a same-origin spider that also
-  records HTML forms, wordlist probing, API/CMS/misconfiguration path checks,
-  and form-aware web-vuln probes. The built-in web-vuln engine submits both GET
-  query strings and POST form fields to detect reflected XSS, SQL injection, OS
-  command injection, path traversal / LFI, and SSTI using marker, quote, and
-  file-read payloads — nothing destructive is sent.
+  records HTML forms, wordlist probing, API/CMS/misconfiguration path checks, a
+  leaked-credential scanner, and form-aware web-vuln probes. The built-in
+  web-vuln engine submits both GET query strings and POST form fields to detect
+  reflected XSS, SQL injection, OS command injection, path traversal / LFI,
+  SSTI, and in-band XXE; it also flags state-changing forms with no anti-CSRF
+  token and confirms SSRF through an out-of-band callback listener — nothing
+  destructive is sent.
 - **Scope enforcement** — discovered hosts outside your scope file are never
   actively scanned.
 - **Adaptive rate limiting** — 40 req/s by default, halved automatically when a
@@ -110,10 +112,11 @@ shaidra example.com -oJ --output-dir out --output-name my-run
 | `misconfig` | Sensitive files and misconfiguration probes |
 | `cors` | Tests for permissive / reflected-origin CORS policies |
 | `jwt` | Inspects JWT tokens found while crawling |
-| `webvuln` | nuclei templates + dalfox XSS, or built-in form-aware XSS / SQLi / command-injection / LFI / SSTI probes |
+| `webvuln` | nuclei templates + dalfox XSS, or built-in form-aware XSS / SQLi / command-injection / LFI / SSTI / XXE probes, anti-CSRF token checks, and out-of-band SSRF confirmation |
 | `redirect` | Open-redirect checks on crawled parameterized URLs |
 | `takeover` | Subdomain takeover fingerprints on discovered hostnames |
 | `cve` | Maps detected software versions to known CVEs |
+| `secrets` | Scans crawled assets and responses for leaked credentials, API keys, and tokens |
 
 ## Configuration
 
@@ -136,6 +139,10 @@ credentials in `config.yaml`; read secrets from environment variables.
   markers, file-read path payloads, and detection-only SQLi quotes. They probe
   both GET query strings and POST form fields; no writes, uploads, or data
   dumps are sent.
+- The out-of-band callback listener binds loopback by default and the injected
+  URL is only ever sent to the target's own parameters. To verify SSRF against
+  a remote target, set `oob_host` in the config to a host you control that
+  forwards to Shaidra's listener.
 - `sqlmap` runs only in detection-only mode (`--batch --level=1 --risk=1`);
   Shaidra never dumps data or writes to a target.
 - `wpscan` runs only when WordPress is detected; `gowitness` and full wordlists

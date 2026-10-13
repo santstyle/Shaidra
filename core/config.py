@@ -51,6 +51,7 @@ class Config:
     ffuf_threads: int = 40
     katana_depth: int = 3
     waf_rate_limit_drop: float = 0.5
+    oob_host: str | None = None
     timeouts: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_TIMEOUTS))
 
     def timeout_for(self, tool: str, default: int = 300) -> int:
@@ -113,6 +114,7 @@ def build_config(data: Mapping[str, JsonValue]) -> Config:
         ffuf_threads=_as_int(data.get("ffuf_threads"), defaults.ffuf_threads),
         katana_depth=_as_int(data.get("katana_depth"), defaults.katana_depth),
         waf_rate_limit_drop=_as_float(data.get("waf_rate_limit_drop"), defaults.waf_rate_limit_drop),
+        oob_host=_as_opt_str(data.get("oob_host")),
         timeouts=_as_timeouts(data.get("timeouts")),
     )
 
@@ -155,6 +157,13 @@ def _as_str(value: JsonValue | None, default: str) -> str:
     if isinstance(value, str) and value:
         return value
     return default
+
+
+def _as_opt_str(value: JsonValue | None) -> str | None:
+    """Return a trimmed string, or None when unset/blank."""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def _as_timeouts(value: JsonValue | None) -> dict[str, int]:

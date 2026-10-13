@@ -38,6 +38,7 @@ from shaidra.stages import (
     misconfig,
     open_redirect,
     recon,
+    secrets,
     takeover,
     webvuln,
 )
@@ -90,6 +91,7 @@ _FIRST_WAVE: Final[tuple[tuple[str, Category, StageCall], ...]] = (
 _SECOND_WAVE: Final[tuple[tuple[str, Category, StageCall], ...]] = (
     ("Web vulnerabilities", Category.WEBVULN, webvuln.run),
     ("Open redirect", Category.REDIRECT, open_redirect.run),
+    ("Secret scan", Category.SECRETS, secrets.run),
 )
 
 
@@ -175,4 +177,4 @@ async def _guarded(fn: StageCall, name: str, ctx: ScanContext, bus: EventBus) ->
 
 
 def _crawl_requested(categories: set[Category]) -> bool:
-    return bool(categories & {Category.WEBVULN, Category.REDIRECT})
+    return bool(categories & {Category.WEBVULN, Category.REDIRECT, Category.SECRETS})

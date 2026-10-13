@@ -54,6 +54,7 @@ class Category(StrEnum):
     CMS = "cms"
     MISCONFIG = "misconfig"
     CVE = "cve"
+    SECRETS = "secrets"
 
 
 ALL_CATEGORIES: Final[tuple[Category, ...]] = tuple(Category)

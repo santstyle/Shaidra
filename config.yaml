@@ -16,6 +16,12 @@ ffuf_threads: 40        # ffuf concurrency
 katana_depth: 3         # crawl depth for katana
 waf_rate_limit_drop: 0.5  # multiplier applied to rate_limit when a WAF is present
 
+# Out-of-band callback host for SSRF and blind checks. Blank uses loopback
+# (127.0.0.1), which only works for local/lab targets. Set a public host that
+# forwards to Shaidra's listener (its port is chosen at run time) to verify
+# SSRF against remote targets.
+oob_host: ""
+
 wordlists:
   content: wordlists/common.txt
   api: wordlists/api.txt

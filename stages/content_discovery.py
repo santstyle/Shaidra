@@ -20,6 +20,7 @@ from shaidra.core.events import EventBus
 from shaidra.core.models import Category, Finding, JsonValue, LogLevel, ScanContext, Severity
 from shaidra.utils.process import RunOptions, run_tool, stream_lines
 from shaidra.utils.rate_limiter import RateLimiter
+from shaidra.stages.misconfig import is_known_exposure
 
 STAGE_NAME: Final[str] = "Content discovery"
 _STATUS_CODES: Final[str] = "200,204,301,302,307,401,403"
@@ -182,6 +183,8 @@ async def _emit_findings(ctx: ScanContext, bus: EventBus, hits: list[_Hit]) -> i
     for index, hit in enumerate(hits, start=1):
         await bus.stage_progress(STAGE_NAME, index, len(hits))
         path = urlsplit(hit.url).path or hit.url
+        if is_known_exposure(path):
+            continue
         severity = _sensitivity(path)
         if severity is None:
             continue

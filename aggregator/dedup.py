@@ -8,23 +8,41 @@ deliberately excluded: they vary between duplicate reports of one issue.
 
 from __future__ import annotations
 
-from shaidra.core.models import SEVERITY_RANK, Finding
+from typing import Final
+
+from shaidra.core.models import SEVERITY_RANK, Category, Finding
 
 FindingKey = tuple[str, str, str, str, str]
+
+# Categories whose findings describe a reachable path (an exposure) rather than
+# a distinct vulnerability. Two such findings on the same URL are the same
+# exposure seen by different stages, so they collapse to one regardless of the
+# stage that produced them. Vulnerability categories (webvuln, redirect, ...)
+# keep their own identity, so genuinely different bugs on one URL both survive.
+_EXPOSURE_CATEGORIES: Final[frozenset[Category]] = frozenset(
+    {Category.MISCONFIG, Category.CONTENT, Category.API}
+)
 
 
 def finding_key(finding: Finding) -> FindingKey:
     """Build the identity key used to detect duplicate findings.
 
-    The slots are category, host, normalized title, matched URL, and the
-    template/reference identifier. Text slots are stripped (host and title
-    casefolded) so cosmetic differences do not defeat deduplication.
+    Exposure-category findings are keyed by URL alone: the misconfig, content,
+    and api stages probe overlapping paths, and the same reachable file is one
+    issue no matter which stage confirmed it. Every other finding uses the full
+    identity (category, host, normalized title, matched URL, template/reference)
+    so separate vulnerabilities on a shared URL are never merged. Text slots are
+    stripped (host and title casefolded) so cosmetic differences do not defeat
+    deduplication.
     """
+    url = (finding.url or "").strip()
+    if url and finding.category in _EXPOSURE_CATEGORIES:
+        return ("url", url.rstrip("/").casefold(), "", "", "")
     return (
         finding.category.value,
         finding.host.strip().casefold(),
         finding.title.strip().casefold(),
-        (finding.url or "").strip(),
+        url,
         finding.template or finding.reference or "",
     )
 
