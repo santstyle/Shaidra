@@ -32,6 +32,7 @@ from shaidra.output.banner import render_banner
 from shaidra.output.dashboard import MIN_DASHBOARD_HEIGHT, MIN_DASHBOARD_WIDTH
 from shaidra.output.report import write_reports
 from shaidra.output.terminal import TerminalRenderer
+from shaidra.tui import run_tui, should_launch_tui
 from shaidra.utils.tool_install import ensure_on_path, install_missing
 
 _ERROR_STYLE = "red"
@@ -141,6 +142,7 @@ def main(
     """Run a scan against TARGET and stream findings to the terminal."""
     _harden_streams()
     console = _make_console()
+    use_tui = should_launch_tui(quiet=quiet)
 
     if install_tools and not (target and target.strip()):
         asyncio.run(_install_only(console))
@@ -150,7 +152,7 @@ def main(
     raw_target = target.strip() if target else ""
     if not raw_target:
         prompted = True
-        if not quiet:
+        if not quiet and not use_tui:
             render_banner(console)
         raw_target = _prompt_target(console)
 
@@ -182,6 +184,13 @@ def main(
         install_tools=install_tools,
     )
 
+    outdir = Path(output_dir) if output_dir else Path(config.reports_dir)
+    base_name = output_name or _default_base_name(spec.host_port)
+
+    if use_tui:
+        run_tui(ctx, formats=formats, outdir=outdir, base_name=base_name, scope_file=scope)
+        raise typer.Exit()
+
     if not quiet and not prompted:
         # The dashboard header carries the wordmark; only the fallback path
         # prints the standalone banner above the scan.
@@ -193,8 +202,6 @@ def main(
         if not dashboard_ok:
             render_banner(console)
 
-    outdir = Path(output_dir) if output_dir else Path(config.reports_dir)
-    base_name = output_name or _default_base_name(spec.host_port)
     try:
         asyncio.run(
             _run_scan(ctx, console, formats=formats, outdir=outdir, base_name=base_name, scope_file=scope)

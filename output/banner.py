@@ -1,15 +1,17 @@
-"""The SHAIDRA ASCII banner and tagline."""
+"""The SHAIDRA ASCII banner, Dragoncrest logo, and tagline."""
 
 from __future__ import annotations
 
+import os
 from typing import Final
 
 from rich.align import Align
 from rich.console import Console
+from rich.style import Style
 from rich.text import Text
 
 from shaidra import __version__
-from shaidra.output.logo_art import LOGO_ART, LOGO_WIDTH
+from shaidra.output.logo_art import LOGO_CELLS, LOGO_HEIGHT, LOGO_WIDTH
 from shaidra.output.theme import BRAND_ACCENT, BRAND_PRIMARY
 
 _ART: Final[tuple[str, ...]] = (
@@ -21,9 +23,12 @@ _ART: Final[tuple[str, ...]] = (
     " ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝",
 )
 
+# Re-export for callers that need the logo dimensions (dashboard header sizing).
+LOGO_SIZE: Final[tuple[int, int]] = (LOGO_WIDTH, LOGO_HEIGHT)
+
 
 def banner_text() -> Text:
-    """Return the banner art as a single styled Text block."""
+    """Return the ASCII block-letter banner as a single styled Text block."""
     text = Text()
     for line in _ART:
         text.append(f"{line}\n", style=f"bold {BRAND_PRIMARY}")
@@ -31,14 +36,54 @@ def banner_text() -> Text:
 
 
 def logo_art_text() -> Text:
-    """Return the half-block Dragoncrest logo as a Text block.
+    """Return the half-block Dragoncrest logo as a truecolor Text block.
 
-    Each character carries explicit 24-bit foreground/background colors from
-    the pre-rendered art module. Rich renders the ANSI SGR codes as truecolor
-    cells; terminals without truecolor support degrade gracefully to the
-    nearest palette color (or black-on-black if color is off entirely).
+    Each cell is a U+2580 upper-half block whose foreground is the upper
+    pixel and background the lower pixel, both taken from the pre-rendered
+    cell data. Rich applies per-cell Color objects so it can degrade
+    truecolor to 256/16-color automatically on older terminals — never
+    embed raw ANSI escape codes in a Text string, Rich does not parse them
+    and the terminal mangles the result.
     """
-    return Text(LOGO_ART, no_wrap=True)
+    text = Text(no_wrap=True)
+    for index, row in enumerate(LOGO_CELLS):
+        if index:
+            text.append("\n")
+        for upper, lower in row:
+            text.append(
+                "▀",
+                style=Style(
+                    color=f"rgb({upper[0]},{upper[1]},{upper[2]})",
+                    bgcolor=f"rgb({lower[0]},{lower[1]},{lower[2]})",
+                ),
+            )
+    return text
+
+
+def logo_art_text_sampled(target_rows: int = 5) -> Text:
+    """Return a vertically-sampled version of the logo at reduced height.
+
+    The full logo is 10 half-block rows tall. Space-constrained surfaces
+    (TUI header) sample evenly-spaced rows so the crest still reads at
+    ~half the vertical cost.
+    """
+    total = len(LOGO_CELLS)
+    if target_rows >= total:
+        return logo_art_text()
+    indices = [0] if target_rows <= 1 else [round(i * (total - 1) / (target_rows - 1)) for i in range(target_rows)]
+    text = Text(no_wrap=True)
+    for row_index, index in enumerate(indices):
+        if row_index:
+            text.append("\n")
+        for upper, lower in LOGO_CELLS[index]:
+            text.append(
+                "▀",
+                style=Style(
+                    color=f"rgb({upper[0]},{upper[1]},{upper[2]})",
+                    bgcolor=f"rgb({lower[0]},{lower[1]},{lower[2]})",
+                ),
+            )
+    return text
 
 
 def tagline_text() -> Text:
@@ -54,8 +99,6 @@ def _supports_truecolor(console: Console) -> bool:
     if color_system in ("truecolor", "256"):
         return True
     # Windows Terminal / modern conhost report truecolor via env.
-    import os
-
     return bool(os.environ.get("WT_SESSION") or os.environ.get("ANSICON"))
 
 
