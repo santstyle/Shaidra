@@ -30,10 +30,21 @@ FETCH_TIMEOUT: Final[float] = 10.0
 FETCH_CONCURRENCY: Final[int] = 10
 BODY_SCAN_CAP: Final[int] = 200_000
 _WORDPRESS_TOKEN: Final[str] = "wordpress"
-_GENERATOR_RE: Final[re.Pattern[str]] = re.compile(
-    r"""name=['"]generator['"]\s+content=['"]([^'"]+)""", re.IGNORECASE
-)
+# The <meta name=generator> tag carries the CMS version in either attribute
+# order, so match the whole tag and pull out whichever attribute is present.
+_META_TAG_RE: Final[re.Pattern[str]] = re.compile(r"<meta\b[^>]*>", re.IGNORECASE)
+_META_GENERATOR_RE: Final[re.Pattern[str]] = re.compile(r"""name\s*=\s*['"]generator['"]""", re.IGNORECASE)
+_META_CONTENT_RE: Final[re.Pattern[str]] = re.compile(r"""content\s*=\s*['"]([^'"]+)['"]""", re.IGNORECASE)
 _CMS_NAMES: Final[tuple[str, ...]] = ("wordpress", "joomla", "drupal")
+# Headers that carry a product/version banner, with the product name to prefix
+# when the header value is a bare version (ASP.NET's X-AspNet-Version).
+_HEADER_PRODUCTS: Final[tuple[tuple[str, str], ...]] = (
+    ("server", ""),
+    ("x-powered-by", ""),
+    ("x-generator", ""),
+    ("x-aspnet-version", "asp.net"),
+    ("x-aspnetmvc-version", "asp.net mvc"),
+)
 _BODY_MARKERS: Final[tuple[tuple[str, tuple[str, ...]], ...]] = (
     ("wordpress", ("wp-content", "wp-includes", "wp-login.php")),
     ("joomla", ("/media/system/js/", "com_content")),
@@ -93,24 +104,31 @@ async def _detect_tech(client: httpx.AsyncClient, url: str) -> list[str] | None:
             tokens.append(token)
     generator = _find_generator(body)
     if generator is not None:
+        tokens.append(generator)
         for name in _CMS_NAMES:
             if name in generator and name not in tokens:
                 tokens.append(name)
-    for header in ("server", "x-powered-by", "x-generator"):
+    for header, product in _HEADER_PRODUCTS:
         value = resp.headers.get(header)
-        if value:
-            tokens.append(value)
-            if header == "x-generator":
-                lowered_gen = value.lower()
-                for name in _CMS_NAMES:
-                    if name in lowered_gen and name not in tokens:
-                        tokens.append(name)
+        if not value:
+            continue
+        tokens.append(f"{product} {value}".strip())
+        lowered = value.lower()
+        for name in _CMS_NAMES:
+            if name in lowered and name not in tokens:
+                tokens.append(name)
     return tokens
 
 
 def _find_generator(body: str) -> str | None:
-    match = _GENERATOR_RE.search(body)
-    return match.group(1).lower() if match is not None else None
+    """Return the lowercased ``<meta name=generator>`` content, or None."""
+    for tag in _META_TAG_RE.findall(body):
+        if _META_GENERATOR_RE.search(tag) is None:
+            continue
+        content = _META_CONTENT_RE.search(tag)
+        if content is not None:
+            return content.group(1).strip().lower()
+    return None
 
 
 async def _whatweb_tokens(ctx: ScanContext, url: str) -> list[str]:
@@ -145,9 +163,35 @@ async def _whatweb_tokens(ctx: ScanContext, url: str) -> list[str]:
         if not isinstance(entry, dict):
             continue
         plugins = entry.get("plugins")
-        if isinstance(plugins, dict):
-            tokens.extend(name for name in plugins if isinstance(name, str))
+        if not isinstance(plugins, dict):
+            continue
+        for name, detail in plugins.items():
+            if not isinstance(name, str):
+                continue
+            version = _whatweb_version(detail)
+            tokens.append(f"{name} {version}" if version else name)
     return tokens
+
+
+def _whatweb_version(detail: object) -> str | None:
+    """Return the first version string from a WhatWeb plugin's detail, or None.
+
+    WhatWeb reports each plugin as a dict of attributes (``version``,
+    ``string``, ``os`` ...) whose values are lists; some plugins instead use a
+    list of such dicts. Only the version is kept so the CVE matcher can use it.
+    """
+    entries = detail if isinstance(detail, list) else [detail]
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        versions = entry.get("version")
+        if isinstance(versions, list):
+            for value in versions:
+                if isinstance(value, str) and value:
+                    return value
+        elif isinstance(versions, str) and versions:
+            return versions
+    return None
 
 
 def _read_report(path: str) -> str:

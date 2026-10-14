@@ -130,6 +130,39 @@ _ENTRIES: Final[tuple[CveEntry, ...]] = (
         min_inclusive=(4, 7, 0),
         max_exclusive=(4, 7, 2),
     ),
+    CveEntry(
+        product="tomcat",
+        cve="CVE-2020-1938",
+        severity=Severity.HIGH,
+        title="Apache Tomcat AJP file read / RCE (CVE-2020-1938)",
+        summary="The AJP connector (Ghostcat) permits file read and possible RCE. Fixed in 7.0.100.",
+        min_inclusive=(7, 0, 0),
+        max_exclusive=(7, 0, 100),
+    ),
+    CveEntry(
+        product="drupal",
+        cve="CVE-2018-7600",
+        severity=Severity.CRITICAL,
+        title="Drupal remote code execution 'Drupalgeddon2' (CVE-2018-7600)",
+        summary=(
+            "A remote attacker can exploit Drupal's Form API to execute arbitrary code. Fixed in "
+            "Drupal 8.5.1 (and 7.58, 8.3.9, 8.4.6)."
+        ),
+        min_inclusive=(8, 0, 0),
+        max_exclusive=(8, 5, 1),
+    ),
+    CveEntry(
+        product="jquery",
+        cve="CVE-2019-11358",
+        severity=Severity.MEDIUM,
+        title="jQuery prototype pollution (CVE-2019-11358)",
+        summary=(
+            "jQuery before 3.4.0 copies properties with a deep object-extend that can pollute "
+            "Object.prototype, leading to XSS or other client-side impact."
+        ),
+        min_inclusive=(1, 0, 0),
+        max_exclusive=(3, 4, 0),
+    ),
 )
 
 
