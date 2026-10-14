@@ -29,6 +29,8 @@ from typing import Final
 
 import httpx
 
+from shaidra.utils.process import _kill
+
 Notify = Callable[[str], Awaitable[None]]
 
 _GITHUB_API: Final[str] = "https://api.github.com/repos/{repo}/releases/latest"
@@ -202,7 +204,13 @@ async def _install_from_go(spec: _Spec, target: Path, notify: Notify) -> bool:
             stderr=asyncio.subprocess.PIPE,
             env=env,
         )
-        _, stderr = await process.communicate()
+        try:
+            _, stderr = await process.communicate()
+        except asyncio.CancelledError:
+            # Same leak as utils.process.run_tool: without the kill, the
+            # Proactor pipe transports raise ValueError at interpreter exit.
+            await _kill(process)
+            raise
     except OSError:
         return False
     if process.returncode != 0:

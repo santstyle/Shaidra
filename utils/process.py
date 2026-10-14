@@ -83,6 +83,12 @@ async def run_tool(argv: Sequence[str], options: RunOptions | None = None) -> To
     except TimeoutError:
         await _kill(proc)
         return ToolResult(tool=tool, returncode=TIMEOUT_RC, stdout="", stderr=f"timed out after {opts.timeout}s")
+    except asyncio.CancelledError:
+        # Ctrl+C / TUI quit cancels the scan mid-communicate; reap the child
+        # or its Proactor pipe transports leak and __del__ raises
+        # "ValueError: I/O operation on closed pipe" during interpreter exit.
+        await _kill(proc)
+        raise
 
     return ToolResult(
         tool=tool,
