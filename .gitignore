@@ -19,6 +19,10 @@ venv/
 .ruff_cache/
 .mypy_cache/
 
+# Coverage data.
+.coverage
+htmlcov/
+
 # Agent session state (may contain run transcripts).
 .omo/
 *.log

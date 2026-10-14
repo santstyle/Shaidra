@@ -191,4 +191,4 @@ credentials in `config.yaml`; read secrets from environment variables.
 
 ## License
 
-MIT
+[MIT](LICENSE)
