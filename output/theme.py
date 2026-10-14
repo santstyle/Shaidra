@@ -65,6 +65,34 @@ SEVERITY_ORDER: Final[tuple[Severity, ...]] = (
     Severity.UNKNOWN,
 )
 
+# --- Dashboard palette ------------------------------------------------------
+# The full-screen live dashboard paints its own dark-purple surface, so it
+# cannot rely on the terminal's default foreground (unreadable on light user
+# themes once placed on the dark background). Every dashboard color is an
+# explicit hex; the fallback/piped path above keeps using ANSI/default styles.
+
+DASH_BG_PAGE: Final[str] = "#0B0713"  # near-black purple page background
+DASH_BG_PANEL: Final[str] = "#120C20"  # panel fill
+DASH_BORDER: Final[str] = "#4C1D95"  # deep violet panel borders
+DASH_TITLE: Final[str] = "#A78BFA"  # panel titles
+DASH_ACCENT: Final[str] = "#8B5CF6"  # bars, active dots
+DASH_ACCENT_BRIGHT: Final[str] = "#C4B5FD"  # finished bars, highlights
+DASH_BAR_TRACK: Final[str] = "#2A1F45"  # empty bar / donut gap
+DASH_TEXT: Final[str] = "#E6E1F2"  # primary text on the dark surface
+DASH_DIM: Final[str] = "#8B82AD"  # secondary text
+DASH_OK: Final[str] = "#34D399"  # success checkmarks
+
+# Severity hexes for the dashboard surface; semantics unchanged (critical
+# stays the worst color) but tuned for contrast against DASH_BG_PANEL.
+DASH_SEVERITY_COLORS: Final[dict[Severity, str]] = {
+    Severity.CRITICAL: "#F43F5E",
+    Severity.HIGH: "#F59E0B",
+    Severity.MEDIUM: "#3B82F6",
+    Severity.LOW: "#A855F7",
+    Severity.INFO: "#94A3B8",
+    Severity.UNKNOWN: "#94A3B8",
+}
+
 
 def severity_color(severity: Severity) -> str:
     """Return the semantic color for a severity level."""

@@ -26,6 +26,13 @@ from rich.text import Text
 from shaidra.core.events import Event, EventBus, FindingEvent, HostEvent, LogEvent, StageEvent
 from shaidra.core.models import Finding, Host, LogLevel, ScanContext, Severity, StageStatus
 from shaidra.output import theme
+from shaidra.output.dashboard import (
+    MIN_DASHBOARD_HEIGHT,
+    MIN_DASHBOARD_WIDTH,
+    DashboardState,
+    LiveRebuild,
+    build_dashboard,
+)
 
 _MARKERS: Final[dict[LogLevel, str]] = {
     LogLevel.INFO: "[*]",
@@ -39,22 +46,56 @@ _MAX_TABLE_ROWS: Final[int] = 25
 
 
 class TerminalRenderer:
-    """Consumes the event bus and renders the live view."""
+    """Consumes the event bus and renders the live view.
 
-    def __init__(self, console: Console, *, quiet: bool = False, verbose: bool = False) -> None:
+    Interactive terminals wide enough for it get the full-screen dashboard;
+    everywhere else (pipes, CI, --quiet, tiny windows) falls back to a single
+    progress panel with directly printed log lines.
+    """
+
+    def __init__(
+        self,
+        console: Console,
+        *,
+        quiet: bool = False,
+        verbose: bool = False,
+        scope_file: str | None = None,
+        formats: set[str] | frozenset[str] | None = None,
+        report_dir: str | None = None,
+    ) -> None:
         self._console = console
         self._quiet = quiet
         self._verbose = verbose
+        self._scope_file = scope_file
+        self._formats = frozenset(formats or ())
+        self._report_dir = report_dir
         self._progress = _build_progress(console)
         self._tasks: dict[str, TaskID] = {}
         self._live: Live | None = None
+        self._state: DashboardState | None = None
         self._live_enabled = (not quiet) and console.is_terminal
+        self._dashboard_enabled = (
+            self._live_enabled
+            and console.width >= MIN_DASHBOARD_WIDTH
+            and console.height >= MIN_DASHBOARD_HEIGHT
+        )
 
-    def start(self) -> None:
+    def start(self, ctx: ScanContext | None = None) -> None:
         """Begin the live display if the terminal supports it."""
         if not self._live_enabled:
             return
-        self._live = Live(self._render_live(), console=self._console, refresh_per_second=8, transient=False)
+        renderable: RenderableType
+        if self._dashboard_enabled and ctx is not None:
+            self._state = DashboardState(
+                ctx=ctx,
+                scope_file=self._scope_file,
+                formats=self._formats,
+                report_dir=self._report_dir,
+            )
+            renderable = LiveRebuild(lambda: build_dashboard(self._state))
+        else:
+            renderable = self._render_live()
+        self._live = Live(renderable, console=self._console, refresh_per_second=8, transient=False)
         self._live.start()
 
     def stop(self) -> None:
@@ -109,6 +150,9 @@ class TerminalRenderer:
     def _on_log(self, level: LogLevel, message: str) -> None:
         if self._quiet:
             return
+        if self._state is not None:
+            self._state.on_log(level, message)
+            return
         line = Text()
         line.append(_MARKERS[level], style=Style(color=theme.log_color(level), bold=True))
         line.append(f" {message}", style=theme.primary_style())
@@ -118,10 +162,16 @@ class TerminalRenderer:
         ctx.findings.append(finding)
         if self._quiet:
             return
+        if self._state is not None:
+            self._state.on_finding(finding)
+            return
         self._console.print()
         self._console.print(_finding_block(finding))
 
     def _on_stage(self, stage: StageEvent) -> None:
+        if self._state is not None:
+            self._state.on_stage(stage)
+            return
         if not self._live_enabled:
             return
         match stage.status:
@@ -136,6 +186,9 @@ class TerminalRenderer:
 
     def _on_host(self, host: Host) -> None:
         if self._quiet or not self._verbose:
+            return
+        if self._state is not None:
+            self._state.on_host(host)
             return
         self._console.print(Text(f"[*] host: {host.url or host.host}", style=theme.muted_style()))
 

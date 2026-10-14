@@ -9,11 +9,24 @@ stage having to thread headers itself.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 import httpx
 
 from shaidra.core.models import ScanContext
+from shaidra.utils.stats import record_request
+
+
+async def _record_response(response: httpx.Response) -> None:
+    """Feed one response's latency into the dashboard stats; never raise.
+
+    Must be a coroutine: httpx dispatches AsyncClient hooks via await, and a
+    sync callable can break the request pipeline. A stats failure may not
+    abort the request that just succeeded, so errors are swallowed.
+    """
+    with contextlib.suppress(Exception):
+        record_request(response.elapsed.total_seconds() * 1000.0)
 
 
 def make_http_client(
@@ -35,10 +48,17 @@ def make_http_client(
         merged = dict(headers or {})
         merged.update(kwargs.pop("headers"))
         headers = merged
+    # Merge with any caller-supplied hooks instead of clobbering them; none
+    # exist today, but a silent override would be a nasty surprise later.
+    hooks = dict(kwargs.pop("event_hooks", None) or {})
+    response_hooks = list(hooks.get("response", ()))
+    response_hooks.append(_record_response)
+    hooks["response"] = response_hooks
     return httpx.AsyncClient(
         follow_redirects=follow_redirects,
         timeout=timeout,
         verify=verify,
         headers=headers,
+        event_hooks=hooks,
         **kwargs,
     )

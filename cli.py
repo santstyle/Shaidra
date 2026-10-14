@@ -29,6 +29,7 @@ from shaidra.core.models import ALL_CATEGORIES, Category, ScanContext
 from shaidra.core.orchestrator import KNOWN_TOOLS, orchestrate
 from shaidra.core.scope import ScopeError, build_scope, parse_target
 from shaidra.output.banner import render_banner
+from shaidra.output.dashboard import MIN_DASHBOARD_HEIGHT, MIN_DASHBOARD_WIDTH
 from shaidra.output.report import write_reports
 from shaidra.output.terminal import TerminalRenderer
 from shaidra.utils.tool_install import ensure_on_path, install_missing
@@ -182,21 +183,46 @@ def main(
     )
 
     if not quiet and not prompted:
-        render_banner(console)
+        # The dashboard header carries the wordmark; only the fallback path
+        # prints the standalone banner above the scan.
+        dashboard_ok = (
+            console.is_terminal
+            and console.width >= MIN_DASHBOARD_WIDTH
+            and console.height >= MIN_DASHBOARD_HEIGHT
+        )
+        if not dashboard_ok:
+            render_banner(console)
 
     outdir = Path(output_dir) if output_dir else Path(config.reports_dir)
     base_name = output_name or _default_base_name(spec.host_port)
     try:
-        asyncio.run(_run_scan(ctx, console, formats=formats, outdir=outdir, base_name=base_name))
+        asyncio.run(
+            _run_scan(ctx, console, formats=formats, outdir=outdir, base_name=base_name, scope_file=scope)
+        )
     except KeyboardInterrupt:
         console.print("[!] interrupted", style=_ERROR_STYLE, markup=False)
         raise typer.Exit(code=130) from None
 
 
-async def _run_scan(ctx: ScanContext, console: Console, *, formats: set[str], outdir: Path, base_name: str) -> None:
+async def _run_scan(
+    ctx: ScanContext,
+    console: Console,
+    *,
+    formats: set[str],
+    outdir: Path,
+    base_name: str,
+    scope_file: str | None = None,
+) -> None:
     bus = EventBus()
-    renderer = TerminalRenderer(console, quiet=ctx.quiet, verbose=ctx.verbose)
-    renderer.start()
+    renderer = TerminalRenderer(
+        console,
+        quiet=ctx.quiet,
+        verbose=ctx.verbose,
+        scope_file=scope_file,
+        formats=formats,
+        report_dir=str(outdir),
+    )
+    renderer.start(ctx)
     consumer = asyncio.create_task(renderer.consume(bus, ctx))
     try:
         if ctx.install_tools:
