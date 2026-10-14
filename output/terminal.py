@@ -75,9 +75,7 @@ class TerminalRenderer:
         self._state: DashboardState | None = None
         self._live_enabled = (not quiet) and console.is_terminal
         self._dashboard_enabled = (
-            self._live_enabled
-            and console.width >= MIN_DASHBOARD_WIDTH
-            and console.height >= MIN_DASHBOARD_HEIGHT
+            self._live_enabled and console.width >= MIN_DASHBOARD_WIDTH and console.height >= MIN_DASHBOARD_HEIGHT
         )
 
     def start(self, ctx: ScanContext | None = None) -> None:

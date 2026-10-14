@@ -173,7 +173,11 @@ async def _wordpress_checks(
         )
 
     xmlrpc = await _get(client, limiter, f"{base}/xmlrpc.php")
-    if xmlrpc is not None and xmlrpc.status_code == 200 and "xml-rpc server accepts post requests" in xmlrpc.text.lower():
+    if (
+        xmlrpc is not None
+        and xmlrpc.status_code == 200
+        and "xml-rpc server accepts post requests" in xmlrpc.text.lower()
+    ):
         await bus.finding(
             Finding(
                 title="WordPress XML-RPC endpoint enabled",
@@ -313,7 +317,9 @@ def _wpscan_findings(payload: dict[str, JsonValue], base: str) -> list[Finding]:
     version = payload.get("version")
     if isinstance(version, dict):
         if _text(version.get("status")) in {"insecure", "outdated"}:
-            findings.append(_cms_vuln("WordPress core out of date", base, "wpscan", _text(version.get("number")), version))
+            findings.append(
+                _cms_vuln("WordPress core out of date", base, "wpscan", _text(version.get("number")), version)
+            )
         findings.extend(_wpscan_entry_vulns("WordPress core", version, base))
     findings.extend(_wpscan_component_vulns(payload.get("plugins"), "plugin", base))
     findings.extend(_wpscan_component_vulns(payload.get("themes"), "theme", base))

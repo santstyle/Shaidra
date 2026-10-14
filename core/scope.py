@@ -137,7 +137,11 @@ def _parse_rules(text: str) -> list[str]:
         if not line or line.startswith(COMMENT_PREFIXES):
             continue
         normalized = normalize_host(line) if "://" in line else line
-        candidate = normalized.lstrip("*.").rstrip(".").lower() if normalized.startswith("*.") else normalized.rstrip(".").lower()
+        candidate = (
+            normalized.lstrip("*.").rstrip(".").lower()
+            if normalized.startswith("*.")
+            else normalized.rstrip(".").lower()
+        )
         if not candidate:
             continue
         if line.startswith("*.") and not candidate.startswith("*."):

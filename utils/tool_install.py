@@ -47,7 +47,9 @@ class _Spec:
 # Only tools distributed as a single prebuilt binary (release archive) or via a
 # stable Go module are listed; everything else must be installed by hand.
 _REGISTRY: Final[dict[str, _Spec]] = {
-    "subfinder": _Spec("subfinder", "projectdiscovery/subfinder", "github.com/projectdiscovery/subfinder/v2/cmd/subfinder"),
+    "subfinder": _Spec(
+        "subfinder", "projectdiscovery/subfinder", "github.com/projectdiscovery/subfinder/v2/cmd/subfinder"
+    ),
     "httpx": _Spec("httpx", "projectdiscovery/httpx", "github.com/projectdiscovery/httpx/cmd/httpx"),
     "naabu": _Spec("naabu", "projectdiscovery/naabu", "github.com/projectdiscovery/naabu/v2/cmd/naabu"),
     "katana": _Spec("katana", "projectdiscovery/katana", "github.com/projectdiscovery/katana/cmd/katana"),
@@ -193,8 +195,12 @@ async def _install_from_go(spec: _Spec, target: Path, notify: Notify) -> bool:
     env["CGO_ENABLED"] = "0"
     try:
         process = await asyncio.create_subprocess_exec(
-            go, "install", spec.module + "@latest",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
+            go,
+            "install",
+            spec.module + "@latest",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         _, stderr = await process.communicate()
     except OSError:

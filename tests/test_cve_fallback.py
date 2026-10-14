@@ -26,9 +26,7 @@ def _context() -> ScanContext:
     # available_tools stays empty, so has_tool("nuclei") is False and the
     # built-in table runs instead of nuclei.
     ctx.add_host(Host(host="example.com", url=target, is_live=True, tech=["Apache/2.4.49 (Ubuntu)"]))
-    ctx.add_host(
-        Host(host="safe.example.com", url="http://safe.example.com", is_live=True, tech=["nginx/1.24.0"])
-    )
+    ctx.add_host(Host(host="safe.example.com", url="http://safe.example.com", is_live=True, tech=["nginx/1.24.0"]))
     return ctx
 
 

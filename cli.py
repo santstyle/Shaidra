@@ -72,6 +72,7 @@ def _make_console() -> Console:
         return Console(legacy_windows=False, no_color=True)
     return Console()
 
+
 app = typer.Typer(
     add_completion=False,
     no_args_is_help=False,
@@ -119,19 +120,39 @@ def main(
         str | None,
         typer.Argument(help="Target host, host:port, or URL (authorized scope only). Prompted if omitted."),
     ] = None,
-    scope: Annotated[str | None, typer.Option("--scope", "-s", help="Scope file: one domain, IP, or CIDR per line.")] = None,
-    categories: Annotated[str | None, typer.Option("--categories", "-c", help="Comma-separated categories (default: all).")] = None,
-    rate_limit: Annotated[int | None, typer.Option("--rate-limit", "-r", min=1, help="Requests per second (default: 40).")] = None,
+    scope: Annotated[
+        str | None, typer.Option("--scope", "-s", help="Scope file: one domain, IP, or CIDR per line.")
+    ] = None,
+    categories: Annotated[
+        str | None, typer.Option("--categories", "-c", help="Comma-separated categories (default: all).")
+    ] = None,
+    rate_limit: Annotated[
+        int | None, typer.Option("--rate-limit", "-r", min=1, help="Requests per second (default: 40).")
+    ] = None,
     threads: Annotated[int | None, typer.Option("--threads", min=1, help="Concurrency for fuzzing tools.")] = None,
     mode: Annotated[str | None, typer.Option("--mode", "-m", help="Scan mode: quick or deep.")] = None,
-    extended: Annotated[bool, typer.Option("--extended", "-x", help="Enable heavy checks (screenshots, full wordlists).")] = False,
-    install_tools: Annotated[bool, typer.Option("--install-tools", help="Download and install missing external tools before scanning (or alone, without a target).")] = False,
+    extended: Annotated[
+        bool, typer.Option("--extended", "-x", help="Enable heavy checks (screenshots, full wordlists).")
+    ] = False,
+    install_tools: Annotated[
+        bool,
+        typer.Option(
+            "--install-tools",
+            help="Download and install missing external tools before scanning (or alone, without a target).",
+        ),
+    ] = False,
     config_path: Annotated[str | None, typer.Option("--config", help="Path to a config.yaml file.")] = None,
-    cookie: Annotated[str | None, typer.Option("--cookie", help="Session cookie sent with every request, e.g. \"session=abc123\".")] = None,
-    header: Annotated[list[str], typer.Option("--header", "-H", help="Extra request header \"Name: value\" (repeatable).")] = [],
+    cookie: Annotated[
+        str | None, typer.Option("--cookie", help='Session cookie sent with every request, e.g. "session=abc123".')
+    ] = None,
+    header: Annotated[
+        list[str], typer.Option("--header", "-H", help='Extra request header "Name: value" (repeatable).')
+    ] = [],
     verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Show discovered hosts and extra detail.")] = False,
     quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Suppress live output.")] = False,
-    output: Annotated[list[str], typer.Option("-o", "--output", help="Report format(s): J, M, T, A (repeatable, e.g. -oJ -oA).")] = [],
+    output: Annotated[
+        list[str], typer.Option("-o", "--output", help="Report format(s): J, M, T, A (repeatable, e.g. -oJ -oA).")
+    ] = [],
     output_dir: Annotated[str | None, typer.Option("--output-dir", help="Directory for report files.")] = None,
     output_name: Annotated[str | None, typer.Option("--output-name", help="Base name for report files.")] = None,
     version: Annotated[
@@ -195,17 +216,13 @@ def main(
         # The dashboard header carries the wordmark; only the fallback path
         # prints the standalone banner above the scan.
         dashboard_ok = (
-            console.is_terminal
-            and console.width >= MIN_DASHBOARD_WIDTH
-            and console.height >= MIN_DASHBOARD_HEIGHT
+            console.is_terminal and console.width >= MIN_DASHBOARD_WIDTH and console.height >= MIN_DASHBOARD_HEIGHT
         )
         if not dashboard_ok:
             render_banner(console)
 
     try:
-        asyncio.run(
-            _run_scan(ctx, console, formats=formats, outdir=outdir, base_name=base_name, scope_file=scope)
-        )
+        asyncio.run(_run_scan(ctx, console, formats=formats, outdir=outdir, base_name=base_name, scope_file=scope))
     except KeyboardInterrupt:
         console.print("[!] interrupted", style=_ERROR_STYLE, markup=False)
         raise typer.Exit(code=130) from None

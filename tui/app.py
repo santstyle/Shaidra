@@ -82,9 +82,7 @@ class ScanCompleteMsg(Message):
 
 # ── helpers ────────────────────────────────────────────────────────────
 
-_SEV_COLOR = {
-    severity: theme.DASH_SEVERITY_COLORS[severity] for severity in Severity
-}
+_SEV_COLOR = {severity: theme.DASH_SEVERITY_COLORS[severity] for severity in Severity}
 
 _LOG_LEVEL_COLORS = {
     LogLevel.INFO: theme.DASH_TEXT,
@@ -443,10 +441,7 @@ class ShaidraApp(App[None]):
             self.notify(f"Failed to write reports: {exc}", severity="error")
             return {}
         labels = {".json": "JSON", ".md": "Markdown", ".txt": "TXT"}
-        return {
-            labels.get(path.suffix, path.suffix.lstrip(".").upper()): str(path)
-            for path in paths
-        }
+        return {labels.get(path.suffix, path.suffix.lstrip(".").upper()): str(path) for path in paths}
 
     # ── message handlers ───────────────────────────────────────────────
 

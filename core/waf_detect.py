@@ -130,9 +130,9 @@ async def _via_headers(ctx: ScanContext) -> str | None:
 def _candidate_urls(target_url: str) -> list[str]:
     """Return the target URL and its opposite-scheme sibling to probe both."""
     if target_url.startswith("https://"):
-        return [target_url, f"http://{target_url[len('https://'):]}"]
+        return [target_url, f"http://{target_url[len('https://') :]}"]
     if target_url.startswith("http://"):
-        return [target_url, f"https://{target_url[len('http://'):]}"]
+        return [target_url, f"https://{target_url[len('http://') :]}"]
     return [f"https://{target_url}", f"http://{target_url}"]
 
 

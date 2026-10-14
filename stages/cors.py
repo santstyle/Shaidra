@@ -199,11 +199,7 @@ def _format_headers(result: _ProbeResult) -> str:
     """Render the offending Origin and response headers for evidence."""
     acao = result.acao if result.acao is not None else "(absent)"
     acac = result.acac if result.acac is not None else "(absent)"
-    return (
-        f"Origin: {result.origin} -> "
-        f"Access-Control-Allow-Origin: {acao}; "
-        f"Access-Control-Allow-Credentials: {acac}"
-    )
+    return f"Origin: {result.origin} -> Access-Control-Allow-Origin: {acao}; Access-Control-Allow-Credentials: {acac}"
 
 
 def _build_finding(host: Host, result: _ProbeResult) -> Finding:

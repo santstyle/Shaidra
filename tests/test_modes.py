@@ -42,9 +42,6 @@ def test_content_budget_uses_full_list_when_extended() -> None:
 
 
 def test_select_probes_respects_cap() -> None:
-    probes = [
-        _Probe(method="GET", url=f"https://example.com/?p{i}=", param=f"p{i}", fields={})
-        for i in range(10)
-    ]
+    probes = [_Probe(method="GET", url=f"https://example.com/?p{i}=", param=f"p{i}", fields={}) for i in range(10)]
     assert len(_select_probes(probes, cap=3)) == 3
     assert len(_select_probes(probes)) == 10

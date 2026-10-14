@@ -22,7 +22,10 @@ def test_stream_lines_skips_oversized_line_and_keeps_rest() -> None:
         # command-length limits never apply.
         huge = "x" * (2 * 1024 * 1024)
         script = f"import sys\nsys.stdout.write('first\\n{huge}\\nlast\\n')\nsys.stdout.flush()\n"
-        return [line async for line in stream_lines([sys.executable, "-u", "-"], RunOptions(timeout=15.0, input_text=script))]
+        return [
+            line
+            async for line in stream_lines([sys.executable, "-u", "-"], RunOptions(timeout=15.0, input_text=script))
+        ]
 
     lines = asyncio.run(collect())
     assert "first" in lines

@@ -43,21 +43,55 @@ _OWN_HIT_CODES: Final[frozenset[int]] = frozenset({200, 204, 301, 302, 307, 401,
 _BODY_CAP: Final[int] = 256_000
 _BODY_FETCH_BUDGET: Final[int] = 150
 _TEXT_TYPES: Final[tuple[str, ...]] = (
-    "json", "text", "xml", "javascript", "html", "yaml", "csv", "x-www-form-urlencoded",
+    "json",
+    "text",
+    "xml",
+    "javascript",
+    "html",
+    "yaml",
+    "csv",
+    "x-www-form-urlencoded",
 )
 
 # Sensitivity map, matched against the lowercased path. First tier that
 # matches wins, so the most dangerous tier is checked first.
 _HIGH_MARKERS: Final[tuple[str, ...]] = (
-    ".git/", ".env", "wp-config", "backup", ".sql", ".bak", "config", "credential",
+    ".git/",
+    ".env",
+    "wp-config",
+    "backup",
+    ".sql",
+    ".bak",
+    "config",
+    "credential",
 )
 _MEDIUM_MARKERS: Final[tuple[str, ...]] = (
-    "admin", "phpmyadmin", "server-status", ".htaccess", ".ds_store",
+    "admin",
+    "phpmyadmin",
+    "server-status",
+    ".htaccess",
+    ".ds_store",
 )
 _LOW_MARKERS: Final[tuple[str, ...]] = (
-    ".htpasswd", ".gitignore", "phpinfo", "info.php", "actuator", "server-info",
-    "metrics", "debug", "swagger", "graphiql", "graphql", "console", "setup",
-    "install", "trace", "dump", ".aws/", "wp-json", "wp-login",
+    ".htpasswd",
+    ".gitignore",
+    "phpinfo",
+    "info.php",
+    "actuator",
+    "server-info",
+    "metrics",
+    "debug",
+    "swagger",
+    "graphiql",
+    "graphql",
+    "console",
+    "setup",
+    "install",
+    "trace",
+    "dump",
+    ".aws/",
+    "wp-json",
+    "wp-login",
 )
 
 
@@ -155,8 +189,17 @@ def _resolve_wordlist(configured: str) -> Path | None:
 
 async def _feroxbuster_hits(ctx: ScanContext, base: str, wordlist: Path, bus: EventBus) -> list[_Hit]:
     argv = [
-        "feroxbuster", "-u", base, "--json", "-w", str(wordlist),
-        "-t", str(ctx.config.ffuf_threads), "-s", _STATUS_CODES, "--silent",
+        "feroxbuster",
+        "-u",
+        base,
+        "--json",
+        "-w",
+        str(wordlist),
+        "-t",
+        str(ctx.config.ffuf_threads),
+        "-s",
+        _STATUS_CODES,
+        "--silent",
     ]
     options = RunOptions(timeout=ctx.config.timeout_for("feroxbuster"))
     total = _wordlist_entries(wordlist)
@@ -185,8 +228,18 @@ async def _ffuf_hits(ctx: ScanContext, base: str, wordlist: Path) -> list[_Hit]:
     os.close(handle)
     try:
         argv = [
-            "ffuf", "-u", f"{base.rstrip('/')}/FUZZ", "-w", str(wordlist),
-            "-mc", _STATUS_CODES, "-of", "json", "-o", report, "-s",
+            "ffuf",
+            "-u",
+            f"{base.rstrip('/')}/FUZZ",
+            "-w",
+            str(wordlist),
+            "-mc",
+            _STATUS_CODES,
+            "-of",
+            "json",
+            "-o",
+            report,
+            "-s",
         ]
         options = RunOptions(timeout=ctx.config.timeout_for("ffuf"))
         result = await run_tool(argv, options)
@@ -369,9 +422,7 @@ def _squash(text: str) -> str:
     return " ".join(text.split())
 
 
-async def _emit_findings(
-    ctx: ScanContext, bus: EventBus, hits: list[_Hit], baselines: dict[str, _Baseline]
-) -> int:
+async def _emit_findings(ctx: ScanContext, bus: EventBus, hits: list[_Hit], baselines: dict[str, _Baseline]) -> int:
     emitted = 0
     secrets_seen: set[tuple[str, str]] = set()
     for index, hit in enumerate(hits, start=1):

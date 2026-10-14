@@ -424,7 +424,9 @@ def _build_progress(state: DashboardState) -> RenderableType:
         name.append("● ", style=Style(color=_DOT_COLORS[row_state], bold=True))
         name.append(row_key, style=Style(color=theme.DASH_TEXT))
         pct_color = theme.DASH_ACCENT_BRIGHT if row_state == "done" else theme.DASH_DIM
-        grid.add_row(name, _bar(percent, done=row_state == "done"), Text(f"{percent:.0f}%", style=Style(color=pct_color)))
+        grid.add_row(
+            name, _bar(percent, done=row_state == "done"), Text(f"{percent:.0f}%", style=Style(color=pct_color))
+        )
     return _panel(grid, title="SCAN PROGRESS")
 
 
@@ -519,7 +521,9 @@ def _build_recent(state: DashboardState) -> RenderableType:
         line.add_row(badge, Text(_short_time(finding.timestamp), style=Style(color=theme.DASH_DIM)))
         rows.append(line)
         rows.append(
-            Text(f"  {finding.url or finding.host}", style=Style(color=theme.DASH_DIM), no_wrap=True, overflow="ellipsis")
+            Text(
+                f"  {finding.url or finding.host}", style=Style(color=theme.DASH_DIM), no_wrap=True, overflow="ellipsis"
+            )
         )
     return _panel(Group(*rows), title="RECENT FINDINGS")
 

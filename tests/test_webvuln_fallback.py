@@ -130,9 +130,7 @@ async def _run_builtin(target_url: str) -> list[Finding]:
     return collected
 
 
-def test_builtin_reflection_flags_unescaped_marker(
-    reflecting_server: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_builtin_reflection_flags_unescaped_marker(reflecting_server: str, monkeypatch: pytest.MonkeyPatch) -> None:
     async def _noop(*args: object, **kwargs: object) -> int:
         return 0
 
@@ -154,9 +152,7 @@ def test_builtin_reflection_flags_unescaped_marker(
     assert not any(finding.title == "Host header injection" for finding in findings)
 
 
-def test_builtin_host_header_reflection_flagged(
-    host_echo_server: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_builtin_host_header_reflection_flagged(host_echo_server: str, monkeypatch: pytest.MonkeyPatch) -> None:
     async def _noop(*args: object, **kwargs: object) -> int:
         return 0
 

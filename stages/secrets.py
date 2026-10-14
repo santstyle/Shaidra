@@ -32,8 +32,14 @@ _MAX_FINDINGS: Final[int] = 60
 _BODY_CAP: Final[int] = 512 * 1024
 _TIMEOUT: Final[float] = 12.0
 _TEXT_TYPES: Final[tuple[str, ...]] = (
-    "text/", "application/json", "application/javascript", "application/xml",
-    "application/x-javascript", "+json", "+xml", "application/ld+json",
+    "text/",
+    "application/json",
+    "application/javascript",
+    "application/xml",
+    "application/x-javascript",
+    "+json",
+    "+xml",
+    "application/ld+json",
 )
 _ASSET_RE: Final[re.Pattern[str]] = re.compile(r"""(?:src|href)\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 _ASSET_EXT: Final[tuple[str, ...]] = (".js", ".mjs", ".json", ".xml", ".map", ".txt")
@@ -101,9 +107,7 @@ def _scan_targets(ctx: ScanContext) -> list[str]:
     return urls
 
 
-def _extract_assets(
-    page_url: str, body: str, ctx: ScanContext, seen_urls: set[str]
-) -> list[str]:
+def _extract_assets(page_url: str, body: str, ctx: ScanContext, seen_urls: set[str]) -> list[str]:
     """Return same-origin script/data assets referenced by an HTML page."""
     assets: list[str] = []
     for reference in _ASSET_RE.findall(body):
@@ -125,9 +129,7 @@ def _extract_assets(
     return assets
 
 
-async def _fetch(
-    client: httpx.AsyncClient, limiter: RateLimiter, url: str
-) -> tuple[str, bool] | None:
+async def _fetch(client: httpx.AsyncClient, limiter: RateLimiter, url: str) -> tuple[str, bool] | None:
     """Fetch a URL and return its body plus an is-HTML flag, or None."""
     await limiter.acquire()
     try:

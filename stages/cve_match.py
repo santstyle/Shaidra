@@ -235,9 +235,7 @@ def _map_severity(raw: JsonValue | None) -> Severity:
 def _write_list(entries: list[str]) -> Path | None:
     """Write entries as a newline-delimited temp file, or None on failure."""
     try:
-        with tempfile.NamedTemporaryFile(
-            "w", encoding="utf-8", newline="\n", suffix=".txt", delete=False
-        ) as handle:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", newline="\n", suffix=".txt", delete=False) as handle:
             handle.write("\n".join(entries))
             handle.write("\n")
             return Path(handle.name)

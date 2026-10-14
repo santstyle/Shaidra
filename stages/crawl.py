@@ -41,9 +41,7 @@ SPIDER_DEPTH: Final[int] = 3
 SPIDER_DEPTH_DEEP: Final[int] = 6
 SPIDER_TIMEOUT: Final[float] = 10.0
 _SPIDER_BODY_CAP: Final[int] = 250_000
-_SPIDER_ATTR_RE: Final[re.Pattern[str]] = re.compile(
-    r"""(?:href|src|action)\s*=\s*["']([^"']+)["']""", re.IGNORECASE
-)
+_SPIDER_ATTR_RE: Final[re.Pattern[str]] = re.compile(r"""(?:href|src|action)\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 _SPIDER_FORM_RE: Final[re.Pattern[str]] = re.compile(r"<form[^>]*>.*?</form>", re.IGNORECASE | re.DOTALL)
 _SPIDER_METHOD_RE: Final[re.Pattern[str]] = re.compile(r"""method\s*=\s*["']post["']""", re.IGNORECASE)
 _SPIDER_ACTION_RE: Final[re.Pattern[str]] = re.compile(r"""action\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
@@ -56,27 +54,39 @@ _SPIDER_TAG_VALUE_RE: Final[re.Pattern[str]] = re.compile(r"""\bvalue\s*=\s*["']
 _SPIDER_TAG_TYPE_RE: Final[re.Pattern[str]] = re.compile(r"""\btype\s*=\s*["']?([^"'\s>/]+)""", re.IGNORECASE)
 _SPIDER_CSRF_RE: Final[re.Pattern[str]] = re.compile(r"(csrf|xsrf|authenticity|nonce|_token|token)", re.IGNORECASE)
 _SPIDER_SKIP_INPUT_RE: Final[frozenset[str]] = frozenset({"submit", "button", "image", "reset", "file"})
-_SPIDER_SKIP_EXT: Final[frozenset[str]] = frozenset({
-    ".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
-    ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".mp3", ".zip", ".gz", ".pdf",
-})
+_SPIDER_SKIP_EXT: Final[frozenset[str]] = frozenset(
+    {
+        ".css",
+        ".js",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".svg",
+        ".webp",
+        ".ico",
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".eot",
+        ".mp4",
+        ".mp3",
+        ".zip",
+        ".gz",
+        ".pdf",
+    }
+)
 # SPA/API targets expose most of their real routes in robots.txt, sitemap.xml
 # and JS bundles rather than in <a href>/<form>, so the built-in spider mines
 # those too — otherwise the web-vuln and redirect stages get nothing to probe.
 _ROBOTS_RULE_RE: Final[re.Pattern[str]] = re.compile(
     r"^\s*(?:allow|disallow)\s*:\s*(\S+)", re.IGNORECASE | re.MULTILINE
 )
-_ROBOTS_SITEMAP_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\s*sitemap\s*:\s*(\S+)", re.IGNORECASE | re.MULTILINE
-)
+_ROBOTS_SITEMAP_RE: Final[re.Pattern[str]] = re.compile(r"^\s*sitemap\s*:\s*(\S+)", re.IGNORECASE | re.MULTILINE)
 _SITEMAP_LOC_RE: Final[re.Pattern[str]] = re.compile(r"<loc>\s*([^<\s]+)\s*</loc>", re.IGNORECASE)
-_SCRIPT_SRC_RE: Final[re.Pattern[str]] = re.compile(
-    r"""<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']""", re.IGNORECASE
-)
+_SCRIPT_SRC_RE: Final[re.Pattern[str]] = re.compile(r"""<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 _SCRIPT_BODY_RE: Final[re.Pattern[str]] = re.compile(r"<script\b[^>]*>([\s\S]*?)</script>", re.IGNORECASE)
-_JS_PATH_RE: Final[re.Pattern[str]] = re.compile(
-    r"""["'`]((?:https?://|/)[A-Za-z0-9_\-./?=&%:~+#]{1,300})["'`]"""
-)
+_JS_PATH_RE: Final[re.Pattern[str]] = re.compile(r"""["'`]((?:https?://|/)[A-Za-z0-9_\-./?=&%:~+#]{1,300})["'`]""")
 _MAX_META_URLS: Final[int] = 150
 _MAX_META_URLS_DEEP: Final[int] = 500
 _MAX_JS_FILES: Final[int] = 12

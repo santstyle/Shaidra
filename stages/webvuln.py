@@ -56,8 +56,20 @@ _DYNAMIC_EXT_RE: Final[re.Pattern[str]] = re.compile(
     r"\.(?:php|asp|aspx|jsp|jspx|do|action|cgi|pl|py|rb)\b", re.IGNORECASE
 )
 _INJECT_PARAMS: Final[tuple[str, ...]] = (
-    "id", "q", "query", "search", "page", "file", "path", "url", "redirect",
-    "callback", "user", "lang", "type", "cmd",
+    "id",
+    "q",
+    "query",
+    "search",
+    "page",
+    "file",
+    "path",
+    "url",
+    "redirect",
+    "callback",
+    "user",
+    "lang",
+    "type",
+    "cmd",
 )
 _MAX_CSRF: Final[int] = 25
 _MAX_SSRF: Final[int] = 40
@@ -1035,9 +1047,7 @@ async def _sqli_inband(
         if not (error_hit or differential):
             continue
         outcome = (
-            "produced a database error pattern"
-            if error_hit
-            else "changed the response beyond the endpoint's own drift"
+            "produced a database error pattern" if error_hit else "changed the response beyond the endpoint's own drift"
         )
         await bus.finding(
             Finding(

@@ -17,9 +17,7 @@ from typing import Final
 from shaidra.core.models import Severity
 
 # "apache/2.4.49", "nginx 1.24.0", "apache tomcat/9.0.30", "wordpress 5.8"
-_VERSION_RE: Final[re.Pattern[str]] = re.compile(
-    r"^(?P<name>[a-z][a-z0-9._+ -]*?)[ /]v?(?P<ver>\d+(?:\.\d+){0,3})"
-)
+_VERSION_RE: Final[re.Pattern[str]] = re.compile(r"^(?P<name>[a-z][a-z0-9._+ -]*?)[ /]v?(?P<ver>\d+(?:\.\d+){0,3})")
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,10 +121,7 @@ _ENTRIES: Final[tuple[CveEntry, ...]] = (
         cve="CVE-2017-1001000",
         severity=Severity.HIGH,
         title="WordPress REST API content injection (CVE-2017-1001000)",
-        summary=(
-            "The WordPress REST API in 4.7.0-4.7.1 lets unauthenticated users modify any post. "
-            "Fixed in 4.7.2."
-        ),
+        summary=("The WordPress REST API in 4.7.0-4.7.1 lets unauthenticated users modify any post. Fixed in 4.7.2."),
         min_inclusive=(4, 7, 0),
         max_exclusive=(4, 7, 2),
     ),

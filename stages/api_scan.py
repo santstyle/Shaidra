@@ -203,7 +203,12 @@ def _kr_finding(line: str, fallback_base: str) -> Finding | None:
     payload = _load_object(line)
     if payload is None:
         return None
-    route = _text(payload.get("URL")) or _text(payload.get("url")) or _text(payload.get("Path")) or _text(payload.get("path"))
+    route = (
+        _text(payload.get("URL"))
+        or _text(payload.get("url"))
+        or _text(payload.get("Path"))
+        or _text(payload.get("path"))
+    )
     if not route:
         return None
     url = route if route.startswith(("http://", "https://")) else f"{fallback_base}{route}"

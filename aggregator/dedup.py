@@ -19,9 +19,7 @@ FindingKey = tuple[str, str, str, str, str]
 # exposure seen by different stages, so they collapse to one regardless of the
 # stage that produced them. Vulnerability categories (webvuln, redirect, ...)
 # keep their own identity, so genuinely different bugs on one URL both survive.
-_EXPOSURE_CATEGORIES: Final[frozenset[Category]] = frozenset(
-    {Category.MISCONFIG, Category.CONTENT, Category.API}
-)
+_EXPOSURE_CATEGORIES: Final[frozenset[Category]] = frozenset({Category.MISCONFIG, Category.CONTENT, Category.API})
 
 
 def finding_key(finding: Finding) -> FindingKey:

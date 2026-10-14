@@ -32,61 +32,184 @@ _BODY_CAP: Final[int] = 16384
 
 _EXPOSURE_PATHS: Final[tuple[str, ...]] = (
     # Version control metadata (source-code disclosure)
-    ".git/config", ".git/HEAD", ".git/index", ".git/logs/HEAD", ".git/packed-refs",
-    ".git/COMMIT_EDITMSG", ".svn/entries", ".svn/wc.db", ".hg/requires", ".bzr/README",
+    ".git/config",
+    ".git/HEAD",
+    ".git/index",
+    ".git/logs/HEAD",
+    ".git/packed-refs",
+    ".git/COMMIT_EDITMSG",
+    ".svn/entries",
+    ".svn/wc.db",
+    ".hg/requires",
+    ".bzr/README",
     # Environment files (leaked credentials)
-    ".env", ".env.local", ".env.dev", ".env.development", ".env.test", ".env.staging",
-    ".env.production", ".env.prod", ".env.backup", ".env.bak", ".env.old", ".env.save",
-    ".env.example", ".env.json", "env.json", "env.js",
+    ".env",
+    ".env.local",
+    ".env.dev",
+    ".env.development",
+    ".env.test",
+    ".env.staging",
+    ".env.production",
+    ".env.prod",
+    ".env.backup",
+    ".env.bak",
+    ".env.old",
+    ".env.save",
+    ".env.example",
+    ".env.json",
+    "env.json",
+    "env.js",
     # Configuration files
-    "config.json", "config.js", "config.php", "config.yml", "config.yaml", "settings.py",
-    "application.properties", "appsettings.json", "local.settings.json", "web.config",
-    "docker-compose.yml", "docker-compose.yaml", "Dockerfile",
+    "config.json",
+    "config.js",
+    "config.php",
+    "config.yml",
+    "config.yaml",
+    "settings.py",
+    "application.properties",
+    "appsettings.json",
+    "local.settings.json",
+    "web.config",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "Dockerfile",
     # Credentials and private keys
-    "credentials.json", "serviceAccountKey.json", "service-account.json", "gcloud.json",
-    ".aws/credentials", ".aws/config", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
-    ".ssh/id_rsa", ".ssh/id_ed25519", ".ssh/authorized_keys", ".npmrc",
-    ".dockercfg", ".docker/config.json", ".ftpconfig", ".remote-sync.json",
-    "terraform.tfstate", "terraform.tfstate.backup",
+    "credentials.json",
+    "serviceAccountKey.json",
+    "service-account.json",
+    "gcloud.json",
+    ".aws/credentials",
+    ".aws/config",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    ".ssh/id_rsa",
+    ".ssh/id_ed25519",
+    ".ssh/authorized_keys",
+    ".npmrc",
+    ".dockercfg",
+    ".docker/config.json",
+    ".ftpconfig",
+    ".remote-sync.json",
+    "terraform.tfstate",
+    "terraform.tfstate.backup",
     # WordPress
-    "wp-config.php", "wp-config.php.bak", "wp-config.php~", "wp-config.php.save",
-    "wp-config.php.old", "wp-config.txt", "wp-content/debug.log",
+    "wp-config.php",
+    "wp-config.php.bak",
+    "wp-config.php~",
+    "wp-config.php.save",
+    "wp-config.php.old",
+    "wp-config.txt",
+    "wp-content/debug.log",
     # Backups and database dumps
-    "backup.zip", "backup.tar.gz", "backup.tar", "backup.rar", "backup.7z",
-    "site.zip", "www.zip", "web.zip", "backup.sql", "database.sql", "dump.sql", "data.sql",
+    "backup.zip",
+    "backup.tar.gz",
+    "backup.tar",
+    "backup.rar",
+    "backup.7z",
+    "site.zip",
+    "www.zip",
+    "web.zip",
+    "backup.sql",
+    "database.sql",
+    "dump.sql",
+    "data.sql",
     # Diagnostic and server files
-    "phpinfo.php", "info.php", ".htaccess", ".htpasswd", ".DS_Store", "Thumbs.db",
-    "server-status", "server-info", "crossdomain.xml", "clientaccesspolicy.xml",
+    "phpinfo.php",
+    "info.php",
+    ".htaccess",
+    ".htpasswd",
+    ".DS_Store",
+    "Thumbs.db",
+    "server-status",
+    "server-info",
+    "crossdomain.xml",
+    "clientaccesspolicy.xml",
     # Framework debug endpoints and API descriptions
-    "actuator/env", "actuator/health", "actuator/httptrace", "swagger.json", "openapi.json",
+    "actuator/env",
+    "actuator/health",
+    "actuator/httptrace",
+    "swagger.json",
+    "openapi.json",
     # Dependency locks (version fingerprinting)
-    "package-lock.json", "composer.lock", "yarn.lock", "Gemfile.lock",
+    "package-lock.json",
+    "composer.lock",
+    "yarn.lock",
+    "Gemfile.lock",
 )
 _HIGH_EXPOSURES: Final[frozenset[str]] = frozenset(
     {
-        ".git/config", ".git/HEAD", ".git/index", ".git/logs/HEAD", ".git/packed-refs",
-        ".env", ".env.local", ".env.dev", ".env.development", ".env.test", ".env.staging",
-        ".env.production", ".env.prod", ".env.backup", ".env.bak", ".env.old", ".env.save",
-        ".env.json", "env.json",
-        "wp-config.php", "wp-config.php.bak", "wp-config.php~", "wp-config.php.save",
-        "wp-config.php.old", "wp-config.txt",
-        "credentials.json", "serviceAccountKey.json", "service-account.json", "gcloud.json",
-        ".aws/credentials", ".aws/config", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
-        ".ssh/id_rsa", ".ssh/id_ed25519", ".npmrc", ".dockercfg", ".docker/config.json",
-        "terraform.tfstate", "terraform.tfstate.backup",
-        "backup.sql", "database.sql", "dump.sql", "data.sql", "backup.zip",
-        "backup.tar.gz", "backup.rar", "backup.7z", "site.zip", "www.zip", "web.zip",
+        ".git/config",
+        ".git/HEAD",
+        ".git/index",
+        ".git/logs/HEAD",
+        ".git/packed-refs",
+        ".env",
+        ".env.local",
+        ".env.dev",
+        ".env.development",
+        ".env.test",
+        ".env.staging",
+        ".env.production",
+        ".env.prod",
+        ".env.backup",
+        ".env.bak",
+        ".env.old",
+        ".env.save",
+        ".env.json",
+        "env.json",
+        "wp-config.php",
+        "wp-config.php.bak",
+        "wp-config.php~",
+        "wp-config.php.save",
+        "wp-config.php.old",
+        "wp-config.txt",
+        "credentials.json",
+        "serviceAccountKey.json",
+        "service-account.json",
+        "gcloud.json",
+        ".aws/credentials",
+        ".aws/config",
+        "id_rsa",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+        ".ssh/id_rsa",
+        ".ssh/id_ed25519",
+        ".npmrc",
+        ".dockercfg",
+        ".docker/config.json",
+        "terraform.tfstate",
+        "terraform.tfstate.backup",
+        "backup.sql",
+        "database.sql",
+        "dump.sql",
+        "data.sql",
+        "backup.zip",
+        "backup.tar.gz",
+        "backup.rar",
+        "backup.7z",
+        "site.zip",
+        "www.zip",
+        "web.zip",
     }
 )
 _LOW_EXPOSURES: Final[frozenset[str]] = frozenset(
     {
-        ".env.example", ".DS_Store", "Thumbs.db", "crossdomain.xml", "clientaccesspolicy.xml",
-        "Dockerfile", "package-lock.json", "composer.lock", "yarn.lock", "Gemfile.lock",
+        ".env.example",
+        ".DS_Store",
+        "Thumbs.db",
+        "crossdomain.xml",
+        "clientaccesspolicy.xml",
+        "Dockerfile",
+        "package-lock.json",
+        "composer.lock",
+        "yarn.lock",
+        "Gemfile.lock",
     }
 )
-_KNOWN_EXPOSURES_NORM: Final[frozenset[str]] = frozenset(
-    path.strip("/").lower() for path in _EXPOSURE_PATHS
-)
+_KNOWN_EXPOSURES_NORM: Final[frozenset[str]] = frozenset(path.strip("/").lower() for path in _EXPOSURE_PATHS)
 
 
 def is_known_exposure(path: str) -> bool:
@@ -97,8 +220,14 @@ def is_known_exposure(path: str) -> bool:
     classifier here would otherwise raise a duplicate, weaker finding.
     """
     return path.strip("/").lower() in _KNOWN_EXPOSURES_NORM
+
+
 _HTACCESS_MARKERS: Final[tuple[str, ...]] = (
-    "RewriteRule", "RewriteEngine", "Require ", "Order allow", "Deny from",
+    "RewriteRule",
+    "RewriteEngine",
+    "Require ",
+    "Order allow",
+    "Deny from",
 )
 _ENV_LINE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\s*=", re.MULTILINE)
 _HTPASSWD_LINE: Final[re.Pattern[str]] = re.compile(r"^[^\s:#][^:\s]*:.*$", re.MULTILINE)
@@ -108,13 +237,28 @@ _GIT_SHA: Final[re.Pattern[str]] = re.compile(r"[0-9a-f]{40} ")
 _YAML_KV: Final[re.Pattern[str]] = re.compile(r"^\s*[\w.-]+\s*:", re.MULTILINE)
 _ENV_PATHS: Final[frozenset[str]] = frozenset(
     {
-        ".env", ".env.local", ".env.dev", ".env.development", ".env.test", ".env.staging",
-        ".env.production", ".env.prod", ".env.backup", ".env.bak", ".env.old", ".env.save",
-        ".env.example", ".env.json",
+        ".env",
+        ".env.local",
+        ".env.dev",
+        ".env.development",
+        ".env.test",
+        ".env.staging",
+        ".env.production",
+        ".env.prod",
+        ".env.backup",
+        ".env.bak",
+        ".env.old",
+        ".env.save",
+        ".env.example",
+        ".env.json",
     }
 )
 _SQL_MARKERS: Final[tuple[str, ...]] = (
-    "mysql dump", "postgresql database dump", "create table", "insert into", "-- mysql",
+    "mysql dump",
+    "postgresql database dump",
+    "create table",
+    "insert into",
+    "-- mysql",
 )
 _ARCHIVE_MAGIC: Final[dict[str, bytes]] = {
     "backup.zip": b"PK\x03\x04",
@@ -288,8 +432,10 @@ def _confirmed(path: str, status: int, body: bytes, ctype: str) -> bool:
 
     # --- Credentials and private keys ---
     if path == "credentials.json":
-        return not is_html and stripped.startswith("{") and any(
-            k in low for k in ('"key"', "private_key", "client_email", "secret", "password")
+        return (
+            not is_html
+            and stripped.startswith("{")
+            and any(k in low for k in ('"key"', "private_key", "client_email", "secret", "password"))
         )
     if path in ("serviceAccountKey.json", "service-account.json", "gcloud.json"):
         return not is_html and ("service_account" in low or "private_key" in low)
@@ -368,10 +514,16 @@ async def _via_nuclei(ctx: ScanContext, bus: EventBus, bases: Sequence[str]) -> 
     if not ctx.has_tool("nuclei"):
         return 0
     argv = [
-        "nuclei", "-silent", "-nc", "-jsonl",
-        "-tags", "exposure,misconfig",
-        "-rate-limit", str(max(1, ctx.rate_limit)),
-        "-u", ",".join(bases),
+        "nuclei",
+        "-silent",
+        "-nc",
+        "-jsonl",
+        "-tags",
+        "exposure,misconfig",
+        "-rate-limit",
+        str(max(1, ctx.rate_limit)),
+        "-u",
+        ",".join(bases),
     ]
     options = RunOptions(timeout=ctx.config.timeout_for("nuclei"))
     found = 0
