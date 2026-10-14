@@ -22,10 +22,13 @@ async def _record_response(response: httpx.Response) -> None:
     """Feed one response's latency into the dashboard stats; never raise.
 
     Must be a coroutine: httpx dispatches AsyncClient hooks via await, and a
-    sync callable can break the request pipeline. A stats failure may not
-    abort the request that just succeeded, so errors are swallowed.
+    sync callable can break the request pipeline. ``response.elapsed`` is only
+    valid after the body has been read, so the hook awaits ``aread()`` first
+    (the buffered content stays available to the caller). A stats failure may
+    not abort the request that just succeeded, so errors are swallowed.
     """
     with contextlib.suppress(Exception):
+        await response.aread()
         record_request(response.elapsed.total_seconds() * 1000.0)
 
 

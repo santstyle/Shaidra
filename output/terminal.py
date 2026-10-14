@@ -95,12 +95,17 @@ class TerminalRenderer:
             renderable = LiveRebuild(lambda: build_dashboard(self._state))
         else:
             renderable = self._render_live()
-        self._live = Live(renderable, console=self._console, refresh_per_second=8, transient=False)
+        # 4 Hz is smooth enough for stage ticks without the double-paint
+        # flicker that 8 Hz causes on Windows conhost.
+        self._live = Live(renderable, console=self._console, refresh_per_second=4, transient=False)
         self._live.start()
 
     def stop(self) -> None:
         """Tear down the live display."""
         if self._live is not None:
+            if self._state is not None:
+                self._state.finished = True
+                self._live.update(LiveRebuild(lambda: build_dashboard(self._state)), refresh=True)
             self._live.stop()
             self._live = None
 

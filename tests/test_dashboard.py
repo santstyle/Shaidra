@@ -54,11 +54,11 @@ def _populated_state(ctx: ScanContext | None = None) -> DashboardState:
         formats=frozenset({"json", "markdown", "txt"}),
         report_dir="./reports",
     )
-    state.on_stage(StageEvent(name="Recon", status=StageStatus.START))
-    state.on_stage(StageEvent(name="Recon", status=StageStatus.PROGRESS, current=5, total=10))
-    state.on_stage(StageEvent(name="Recon", status=StageStatus.DONE, detail="42 subdomains"))
+    state.on_stage(StageEvent(name="recon", status=StageStatus.START))
+    state.on_stage(StageEvent(name="recon", status=StageStatus.PROGRESS, current=5, total=10))
+    state.on_stage(StageEvent(name="recon", status=StageStatus.DONE, detail="42 subdomains"))
     state.on_log(LogLevel.INFO, "Enumerating subdomains (crt.sh + hackertarget)...")
-    state.on_stage(StageEvent(name="Web vulnerabilities", status=StageStatus.START))
+    state.on_stage(StageEvent(name="Web vulns", status=StageStatus.START))
     for finding in (
         _finding("XSS (reflected)", Severity.HIGH),
         _finding("SQL injection", Severity.CRITICAL),
@@ -129,3 +129,47 @@ def test_stats_counters_reset() -> None:
     stats.reset()
     assert stats.request_count() == 0
     assert stats.average_ms() == 0.0
+
+
+def test_stage_rows_reach_100_on_real_stage_names() -> None:
+    """Every bus stage name the pipeline actually emits must fill its row.
+
+    A name drift between stages/*.py and _ROW_MEMBERS silently freezes that
+    row at 0% and drags the overall bar down (seen live at 54%).
+    """
+    ctx = _ctx()
+    state = DashboardState(ctx=ctx)
+    for name in (
+        "recon",
+        "fingerprint",
+        "port-scan",
+        "Crawl",
+        "Content discovery",
+        "API scan",
+        "CMS scan",
+        "Web vulns",
+        "open_redirect",
+        "Takeover detection",
+        "CVE matching",
+        "Secret scan",
+        "cors",
+        "JWT",
+        "Misconfiguration",
+    ):
+        state.on_stage(StageEvent(name=name, status=StageStatus.START))
+        state.on_stage(StageEvent(name=name, status=StageStatus.DONE, detail="ok"))
+    assert state.overall() == 100.0
+    for row, _selected in state.display_rows():
+        assert state.row_percent(row) == 100.0, f"row {row} not full"
+
+
+def test_finished_forces_overall_complete() -> None:
+    ctx = _ctx()
+    state = DashboardState(ctx=ctx)
+    state.on_stage(StageEvent(name="recon", status=StageStatus.DONE))
+    state.finished = True
+    console = _dashboard_console()
+    console.print(build_dashboard(state))
+    text = console.export_text()
+    assert "Complete." in text
+    assert "Scanning..." not in text

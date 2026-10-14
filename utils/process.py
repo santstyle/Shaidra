@@ -118,7 +118,16 @@ async def stream_lines(argv: Sequence[str], options: RunOptions | None = None) -
             await _feed_stdin(proc, opts.input_text)
             stdout = proc.stdout
             assert stdout is not None
-            async for raw in stdout:
+            # A single physical line longer than the StreamReader limit (64 KiB
+            # default) raises ValueError mid-iteration; skip the oversized line
+            # and keep draining rather than aborting the whole stream.
+            while True:
+                try:
+                    raw = await stdout.readline()
+                except ValueError:
+                    continue
+                if not raw:
+                    break
                 line = raw.decode("utf-8", "replace").rstrip("\r\n")
                 if line:
                     yield line
@@ -131,6 +140,11 @@ async def stream_lines(argv: Sequence[str], options: RunOptions | None = None) -
             await stderr_task
 
 
+# StreamReader default line buffer is 64 KiB; security tools routinely emit
+# single-line JSON well past that (katana on minified JS, nuclei JSONL).
+_STREAM_LIMIT: Final[int] = 2**20  # 1 MiB
+
+
 async def _spawn(binary: str, args: Sequence[str], opts: RunOptions) -> asyncio.subprocess.Process:
     """Create the child process with pipes wired for capture or streaming."""
     return await asyncio.create_subprocess_exec(
@@ -141,6 +155,7 @@ async def _spawn(binary: str, args: Sequence[str], opts: RunOptions) -> asyncio.
         stderr=asyncio.subprocess.PIPE,
         cwd=opts.cwd,
         env=dict(opts.env) if opts.env is not None else None,
+        limit=_STREAM_LIMIT,
     )
 
 

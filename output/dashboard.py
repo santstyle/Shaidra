@@ -63,19 +63,21 @@ _ROW_ORDER: Final[tuple[str, ...]] = (
 )
 
 # One progress row aggregates every bus stage name that contributes to it, so
-# sequential phases (Recon then Fingerprint then Port scan) read as one bar.
+# sequential phases (recon then fingerprint then port-scan) read as one bar.
+# Names must match the STAGE / STAGE_NAME constants the stages actually emit
+# on the bus — any drift silently freezes that row at 0%.
 _ROW_MEMBERS: Final[dict[str, tuple[str, ...]]] = {
-    "recon": ("Recon", "Fingerprint", "Port scan"),
+    "recon": ("recon", "fingerprint", "port-scan"),
     "crawl": ("Crawl",),
     "content": ("Content discovery",),
     "api": ("API scan",),
     "cms": ("CMS scan",),
-    "webvuln": ("Web vulnerabilities",),
-    "redirect": ("Open redirect",),
-    "takeover": ("Takeover",),
-    "cve": ("CVE match",),
+    "webvuln": ("Web vulns",),
+    "redirect": ("open_redirect",),
+    "takeover": ("Takeover detection",),
+    "cve": ("CVE matching",),
     "secrets": ("Secret scan",),
-    "cors": ("CORS",),
+    "cors": ("cors",),
     "jwt": ("JWT",),
     "misconfig": ("Misconfiguration",),
 }
@@ -169,6 +171,7 @@ class DashboardState:
     stage_status: dict[str, StageStatus] = field(default_factory=dict)
     stage_percent: dict[str, float] = field(default_factory=dict)
     feed: deque[Text] = field(default_factory=lambda: deque(maxlen=_FEED_MAX))
+    finished: bool = False
     _last_stage: str = ""
 
     def current_tag(self) -> tuple[str, str]:
@@ -401,7 +404,7 @@ def _build_progress(state: DashboardState) -> RenderableType:
     grid.add_column(no_wrap=True, width=12)
     grid.add_column(ratio=1, no_wrap=True)
     grid.add_column(justify="right", no_wrap=True, width=5)
-    overall = state.overall()
+    overall = 100.0 if state.finished else state.overall()
     grid.add_row(
         Text("Overall", style=Style(color=theme.DASH_TEXT, bold=True)),
         _bar(overall, done=overall >= 100.0),
@@ -447,16 +450,22 @@ def _build_feed(state: DashboardState) -> RenderableType:
 
 
 def _build_status(state: DashboardState) -> RenderableType:
-    overall = state.overall()
+    overall = 100.0 if state.finished else state.overall()
     grid = Table.grid(expand=True)
     grid.add_column(ratio=1, no_wrap=True)
     grid.add_column(justify="right", no_wrap=True, width=5)
-    grid.add_row(_bar(overall, done=overall >= 100.0), Text(f"{overall:.0f}%", style=Style(color=theme.DASH_ACCENT_BRIGHT)))
-    count = len(state.ctx.categories)
     grid.add_row(
-        Text(f"Scanning...  ({count}/{len(ALL_CATEGORIES)} categories)", style=Style(color=theme.DASH_DIM)),
-        Text(""),
+        _bar(overall, done=state.finished or overall >= 100.0),
+        Text(f"{overall:.0f}%", style=Style(color=theme.DASH_ACCENT_BRIGHT)),
     )
+    count = len(state.ctx.categories)
+    if state.finished:
+        status = f"Complete.  ({count}/{len(ALL_CATEGORIES)} categories)"
+        status_style = Style(color=theme.DASH_OK)
+    else:
+        status = f"Scanning...  ({count}/{len(ALL_CATEGORIES)} categories)"
+        status_style = Style(color=theme.DASH_DIM)
+    grid.add_row(Text(status, style=status_style), Text(""))
     return _panel(grid, title="OVERALL")
 
 
