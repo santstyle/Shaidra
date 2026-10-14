@@ -148,7 +148,7 @@ async def _wordpress_checks(
                         "The WordPress REST users endpoint lists account slugs without "
                         "authentication, easing credential-stuffing and login attacks."
                     ),
-                    raw={"users": slugs},
+                    raw={"users": [str(slug) for slug in slugs]},
                 )
             )
 
@@ -403,7 +403,7 @@ def _detected_finding(base: str, families: set[Cms]) -> Finding:
         url=base,
         evidence=f"{base} fingerprints as {names}",
         description="The response fingerprint identifies the content management system in use.",
-        raw={"cms": sorted(family.value for family in families)},
+        raw={"cms": [family.value for family in sorted(families, key=lambda f: f.value)]},
     )
 
 
@@ -415,8 +415,13 @@ def _user_slugs(body: str) -> list[str]:
         return []
     if not isinstance(payload, list):
         return []
-    slugs = [entry.get("slug") for entry in payload if isinstance(entry, dict) and isinstance(entry.get("slug"), str)]
-    return [slug for slug in slugs if slug]
+    slugs: list[str] = []
+    for entry in payload:
+        if isinstance(entry, dict):
+            slug = entry.get("slug")
+            if isinstance(slug, str) and slug:
+                slugs.append(slug)
+    return slugs
 
 
 def _first_version(text: str) -> str:

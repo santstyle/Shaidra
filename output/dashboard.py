@@ -585,12 +585,12 @@ def _donut_text(counts: dict[Severity, int], total: int) -> Text:
             else:
                 cells.append((" ", None))
         if y in labels:
-            label, style = labels[y]
+            label, label_style = labels[y]
             start = (_DONUT_W - len(label)) // 2
             for i, ch in enumerate(label):
-                cells[start + i] = (ch, style)
-        for ch, style in cells:
-            text.append(ch, style=style)
+                cells[start + i] = (ch, label_style)
+        for ch, cell_style in cells:
+            text.append(ch, style=cell_style)
         if y != _DONUT_H - 1:
             text.append("\n")
     return text

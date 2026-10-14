@@ -302,14 +302,14 @@ def _write_reports(
 
 
 def _apply_overrides(config: Config, *, rate_limit: int | None, threads: int | None, mode: str | None) -> Config:
-    changes: dict[str, int | str] = {}
+    updated = config
     if rate_limit is not None:
-        changes["rate_limit"] = rate_limit
+        updated = replace(updated, rate_limit=rate_limit)
     if threads is not None:
-        changes["ffuf_threads"] = threads
+        updated = replace(updated, ffuf_threads=threads)
     if mode is not None:
-        changes["mode"] = mode.lower()
-    return replace(config, **changes) if changes else config
+        updated = replace(updated, mode=mode.lower())
+    return updated
 
 
 def _parse_categories(raw: str | None) -> set[Category]:

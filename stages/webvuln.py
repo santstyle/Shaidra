@@ -1199,7 +1199,7 @@ def _nuclei_finding(line: str, fallback_host: str) -> Finding | None:
         title=title,
         severity=_severity(details.get("severity")),
         category=Category.WEBVULN,
-        host=_host_of(url, fallback_host),
+        host=_host_of(url or "", fallback_host),
         tool="nuclei",
         evidence=_text(payload.get("curl-command")) or matched,
         url=url,

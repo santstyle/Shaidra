@@ -84,13 +84,14 @@ class TerminalRenderer:
             return
         renderable: RenderableType
         if self._dashboard_enabled and ctx is not None:
-            self._state = DashboardState(
+            state = DashboardState(
                 ctx=ctx,
                 scope_file=self._scope_file,
                 formats=self._formats,
                 report_dir=self._report_dir,
             )
-            renderable = LiveRebuild(lambda: build_dashboard(self._state))
+            self._state = state
+            renderable = LiveRebuild(lambda: build_dashboard(state))
         else:
             renderable = self._render_live()
         # 4 Hz is smooth enough for stage ticks without the double-paint
@@ -102,8 +103,9 @@ class TerminalRenderer:
         """Tear down the live display."""
         if self._live is not None:
             if self._state is not None:
-                self._state.finished = True
-                self._live.update(LiveRebuild(lambda: build_dashboard(self._state)), refresh=True)
+                state = self._state
+                state.finished = True
+                self._live.update(LiveRebuild(lambda: build_dashboard(state)), refresh=True)
             self._live.stop()
             self._live = None
 

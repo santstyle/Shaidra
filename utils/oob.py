@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import re
 import secrets
+import socket
 
 _REQUEST_LINE_RE: re.Pattern[str] = re.compile(r"^[A-Z]+\s+(\S+)\s+HTTP/", re.ASCII)
 _READ_LIMIT: int = 64 * 1024
@@ -48,9 +49,9 @@ class InteractionServer:
         if self._server is not None:
             return
         self._server = await asyncio.start_server(self._handle, self._host, self._port)
-        sockets = self._server.sockets or []
-        if sockets:
-            self._port = int(sockets[0].getsockname()[1])
+        bound: list[socket.socket] = list(self._server.sockets or [])
+        if bound:
+            self._port = int(bound[0].getsockname()[1])
 
     async def stop(self) -> None:
         """Stop accepting connections and release the socket."""

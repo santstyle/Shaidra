@@ -128,6 +128,13 @@ def _join_lines(parts: list[Text]) -> Text:
     return out
 
 
+def _fmt_elapsed(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    minutes, secs = divmod(int(seconds), 60)
+    return f"{minutes}m{secs:02d}s"
+
+
 def _header_info(ctx: ScanContext) -> Text:
     total = len(ALL_CATEGORIES)
     selected = len(ctx.categories)
@@ -158,7 +165,7 @@ def _timestamp() -> str:
 class SummaryScreen(ModalScreen[None]):
     """Full findings table with complete URLs; same dark-purple chrome as the dashboard."""
 
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
         Binding("escape", "dismiss_screen", "Close"),
         Binding("q", "dismiss_screen", "Close", show=False),
     ]
@@ -269,14 +276,14 @@ class ShaidraApp(App[None]):
         color: #E6E1F2;
     }
     #header {
-        height: auto;
+        height: 8;
         background: #120C20;
         border-bottom: solid #4C1D95;
-        padding: 1 2;
+        padding: 0 2;
         align-vertical: middle;
     }
     #logo {
-        width: auto;
+        width: 56;
         margin-right: 2;
     }
     #header-info {
@@ -297,27 +304,37 @@ class ShaidraApp(App[None]):
         background: #120C20;
     }
     #left {
-        width: 28%;
+        width: 30%;
     }
     #center {
-        width: 40%;
+        width: 38%;
     }
     #right {
         width: 32%;
     }
-    #progress, #stats, #summary {
-        height: auto;
+    #progress {
+        height: 4fr;
     }
-    #feed, #findings {
+    #stats {
+        height: 3fr;
+    }
+    #feed {
         height: 1fr;
         scrollbar-color: #4C1D95;
     }
     #status {
-        height: auto;
+        height: 4;
+    }
+    #summary {
+        height: 11;
+    }
+    #findings {
+        height: 1fr;
+        scrollbar-color: #4C1D95;
     }
     """
 
-    BINDINGS: ClassVar[list[Binding]] = [
+    BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
         Binding("q", "quit", "Quit"),
         Binding("ctrl+c", "quit", "Quit", priority=True),
         Binding("s", "show_summary", "Summary"),
@@ -380,7 +397,13 @@ class ShaidraApp(App[None]):
         self._refresh_stats()
         self._refresh_summary()
         self._refresh_status()
+        self.set_interval(1.0, self._tick)
         self._run_scan()
+
+    def _tick(self) -> None:
+        if not self._finished:
+            self._refresh_status()
+            self._refresh_stats()
 
     # ── scan worker ────────────────────────────────────────────────────
 
@@ -436,7 +459,7 @@ class ShaidraApp(App[None]):
         if not self.formats:
             return {}
         try:
-            paths = write_reports(self.ctx, self.formats, self.outdir, self.base_name)
+            paths = write_reports(self.ctx, set(self.formats), self.outdir, self.base_name)
         except OSError as exc:
             self.notify(f"Failed to write reports: {exc}", severity="error")
             return {}
@@ -502,28 +525,8 @@ class ShaidraApp(App[None]):
         self.query_one("#feed", RichLog).write(line)
 
     def on_scan_complete_msg(self, msg: ScanCompleteMsg) -> None:
-        status = self.query_one("#status", Static)
-        text = Text()
-        text.append("✓ SCAN COMPLETE", style=f"bold {theme.DASH_OK}")
-        text.append(f"  {len(self.ctx.findings)} finding(s)", style=theme.DASH_ACCENT)
-        if msg.duration:
-            text.append(f"  ·  {msg.duration:.1f}s", style=theme.DASH_DIM)
-        if msg.report_paths:
-            text.append("  ·  reports written", style=theme.DASH_OK)
-        text.append("\n")
-        text.append("press ", style=theme.DASH_DIM)
-        text.append("s", style=f"bold {theme.DASH_ACCENT_BRIGHT}")
-        text.append(" for summary · ", style=theme.DASH_DIM)
-        text.append("q", style=f"bold {theme.DASH_ACCENT_BRIGHT}")
-        text.append(" to quit", style=theme.DASH_DIM)
-        status.update(text)
-        self.push_screen(
-            SummaryScreen(
-                list(self.ctx.findings),
-                duration=msg.duration,
-                report_paths=msg.report_paths,
-            )
-        )
+        # Dashboard stays visible after scan completes; user presses s for summary.
+        self._refresh_status()
 
     # ── refresh helpers ────────────────────────────────────────────────
 
@@ -542,13 +545,18 @@ class ShaidraApp(App[None]):
 
     def _refresh_stats(self) -> None:
         ctx = self.ctx
+        elapsed = time.monotonic() - ctx.start_time if ctx.start_time else 0.0
+        reqs = stats.request_count()
+        rate = reqs / elapsed if elapsed > 0 else 0.0
         rows = [
             ("Hosts", str(len(ctx.hosts))),
             ("URLs", str(len(ctx.crawled_urls))),
             ("Forms", str(len(ctx.form_targets))),
-            ("Requests", str(stats.request_count())),
+            ("Requests", str(reqs)),
             ("Avg latency", f"{stats.average_ms():.0f} ms"),
+            ("Req rate", f"{rate:.1f}/s"),
             ("Findings", str(len(ctx.findings))),
+            ("Elapsed", _fmt_elapsed(elapsed)),
         ]
         text = Text()
         for label, value in rows:
@@ -561,31 +569,44 @@ class ShaidraApp(App[None]):
         for finding in self.ctx.findings:
             counts[finding.severity] += 1
         total = len(self.ctx.findings)
+        max_count = max(counts.values()) if counts else 0
+        bar_width = 14
         text = Text()
         text.append("  Total  ", style=theme.DASH_TITLE)
         text.append(f"{total}\n", style=theme.DASH_ACCENT_BRIGHT)
+        text.append("\n")
         for severity in theme.SEVERITY_ORDER:
-            if not counts[severity]:
-                continue
-            text.append(f"  {severity.name:<10}", style=f"bold {_SEV_COLOR[severity]}")
-            text.append(f"{counts[severity]}\n", style=theme.DASH_TEXT)
+            count = counts[severity]
+            color = _SEV_COLOR[severity]
+            text.append(f"  {severity.name:<8}", style=f"bold {color}")
+            filled = round(count / max_count * bar_width) if max_count else 0
+            text.append("█" * filled, style=color)
+            text.append("█" * (bar_width - filled), style=theme.DASH_BAR_TRACK)
+            text.append(f" {count:>3}\n", style=theme.DASH_TEXT)
         if not total:
-            text.append("  (none yet)\n", style=theme.DASH_DIM)
+            text.append("\n  (no findings yet)\n", style=theme.DASH_DIM)
         self.query_one("#summary", Static).update(text)
 
     def _refresh_status(self) -> None:
-        if self._finished:
-            return
         status = self.query_one("#status", Static)
+        overall = 100.0 if self._finished else self.state.overall()
         text = Text()
+        text.append("  ")
+        text.append(_bar_text(overall, done=self._finished or overall >= 100))
+        text.append(f" {overall:.0f}%\n", style=theme.DASH_ACCENT_BRIGHT)
         tag, color = self.state.current_tag()
-        text.append(f"  {tag}", style=f"bold {color}")
-        text.append(f"  {self.state._last_stage or 'waiting…'}", style=theme.DASH_TEXT)
-        if self.ctx.verbose:
-            text.append(
-                f"  ·  {len(self.ctx.hosts)} hosts  {len(self.ctx.crawled_urls)} urls",
-                style=theme.DASH_DIM,
-            )
+        if self._finished:
+            text.append("  ✓ Complete", style=f"bold {theme.DASH_OK}")
+            text.append("  ·  press ", style=theme.DASH_DIM)
+            text.append("s", style=f"bold {theme.DASH_ACCENT_BRIGHT}")
+            text.append(" for summary · ", style=theme.DASH_DIM)
+            text.append("q", style=f"bold {theme.DASH_ACCENT_BRIGHT}")
+            text.append(" to quit", style=theme.DASH_DIM)
+        else:
+            text.append(f"  {tag}", style=f"bold {color}")
+            text.append(f"  {self.state._last_stage or 'waiting…'}", style=theme.DASH_TEXT)
+            elapsed = time.monotonic() - self.ctx.start_time if self.ctx.start_time else 0.0
+            text.append(f"  ·  {_fmt_elapsed(elapsed)}", style=theme.DASH_DIM)
         status.update(text)
 
     # ── actions ────────────────────────────────────────────────────────

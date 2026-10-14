@@ -138,7 +138,7 @@ def test_stage_event_updates_progress_state() -> None:
     asyncio.run(scenario())
 
 
-def test_scan_complete_opens_summary_and_escape_closes() -> None:
+def test_scan_complete_keeps_dashboard_and_s_opens_summary() -> None:
     finding = _finding("Reflected XSS", Severity.HIGH)
 
     async def scenario() -> None:
@@ -146,11 +146,14 @@ def test_scan_complete_opens_summary_and_escape_closes() -> None:
         async with app.run_test(size=(140, 40)) as pilot:
             await pilot.pause()
             app._dispatch(FindingEvent(finding=finding))
+            app._finished = True
             app.post_message(ScanCompleteMsg(duration=1.5, report_paths={"JSON": "reports/test.json"}))
             await pilot.pause()
-            screen = app.screen
-            assert isinstance(screen, SummaryScreen)
-            table = screen.query_one("#summary-table", DataTable)
+            assert not isinstance(app.screen, SummaryScreen)
+            await pilot.press("s")
+            await pilot.pause()
+            assert isinstance(app.screen, SummaryScreen)
+            table = app.screen.query_one("#summary-table", DataTable)
             assert table.row_count == 1
             assert table.get_row_at(0)[2] == finding.url
             await pilot.press("escape")

@@ -263,13 +263,13 @@ def _extract(name: str, payload: bytes, dest: Path) -> list[Path]:
         return [path for path in files if path.is_file()]
     if lowered.endswith((".tar.gz", ".tgz")):
         with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
-            for member in archive.getmembers():
-                if not member.isfile():
+            for tar_member in archive.getmembers():
+                if not tar_member.isfile():
                     continue
-                target = _safe_member(dest, member.name)
+                target = _safe_member(dest, tar_member.name)
                 if target is None:
                     continue
-                archive.extract(member, dest)
+                archive.extract(tar_member, dest)
                 files.append(target)
         return [path for path in files if path.is_file()]
     return []
