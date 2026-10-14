@@ -13,6 +13,7 @@ import base64
 import contextlib
 import json
 import re
+import secrets
 import tempfile
 import time
 from collections.abc import Coroutine, Sequence
@@ -146,6 +147,13 @@ _CMDI_OOB_TEMPLATES: Final[tuple[str, ...]] = (
     ";wget -qO- {url}",
 )
 _MAX_CMDI_OOB: Final[int] = 12
+_MAX_HOST_HEADER: Final[int] = 6
+_HOST_HEADER_NAMES: Final[tuple[str, ...]] = (
+    "Host",
+    "X-Forwarded-Host",
+    "X-Original-Host",
+    "X-Forwarded-Server",
+)
 _NUCLEI_TAGS: Final[str] = "xss,sqli,ssrf,idor,lfi,rce,xxe"
 _SCHEMES: Final[tuple[str, ...]] = ("http://", "https://")
 _URL_RE: Final[re.Pattern[str]] = re.compile(r"https?://[^\s\"'<>]+")
@@ -250,8 +258,9 @@ async def _builtin_fallback(ctx: ScanContext, bus: EventBus) -> None:
     query strings and form fields alike, GET or POST: reflected XSS, OS command
     injection, path traversal / LFI, server-side template injection, in-band
     XXE, and differential SQL injection, plus a static anti-CSRF token check on
-    discovered forms. Every request is throttled through RateLimiter and the
-    probe set is capped by MAX_OWN_PROBES.
+    discovered forms and a Host-header reflection check on base URLs. Every
+    request is throttled through RateLimiter and the probe set is capped by
+    MAX_OWN_PROBES.
     """
     urls = _probe_urls(ctx)
     if not urls:
@@ -281,6 +290,7 @@ async def _builtin_fallback(ctx: ScanContext, bus: EventBus) -> None:
             tasks: list[Coroutine[Any, Any, int]] = [
                 _own_csrf(ctx, bus, ctx.form_targets),
                 _own_xxe(ctx, bus, client, limiter, urls, probes),
+                _own_host_header(ctx, bus, client, limiter, urls),
             ]
             if probes:
                 if server is not None:
@@ -578,6 +588,67 @@ async def _own_csrf(ctx: ScanContext, bus: EventBus, forms: Sequence[FormTarget]
     return 1
 
 
+async def _own_host_header(
+    ctx: ScanContext,
+    bus: EventBus,
+    client: httpx.AsyncClient,
+    limiter: RateLimiter,
+    urls: Sequence[str],
+) -> int:
+    """Probe for Host-header injection by sending a marker host and watching for echoes.
+
+    A reflected Host header lets an attacker poison password-reset links, cache
+    keys, and absolute URL generation. Detection-only: a unique marker host is
+    sent in common host-override headers; any echo of the marker in the body or
+    Location header confirms the injection.
+    """
+    found = 0
+    seen: set[str] = set()
+    targets: list[str] = []
+    for url in urls:
+        base = urlunsplit((*urlsplit(url)[:2], "/", "", ""))
+        if base not in seen:
+            seen.add(base)
+            targets.append(base)
+        if len(targets) >= _MAX_HOST_HEADER:
+            break
+    for url in targets:
+        token = f"sdrhh-{secrets.token_hex(6)}"
+        marker = f"{token}.example.invalid"
+        for header in _HOST_HEADER_NAMES:
+            await limiter.acquire()
+            try:
+                response = await client.get(url, headers={header: marker})
+            except httpx.HTTPError:
+                continue
+            location = response.headers.get("location", "")
+            if token not in response.text and token not in location:
+                continue
+            found += 1
+            await bus.finding(
+                Finding(
+                    title="Host header injection",
+                    severity=Severity.MEDIUM,
+                    category=Category.WEBVULN,
+                    host=_host_of(url, ctx.target),
+                    tool="shaidra",
+                    url=url,
+                    evidence=(
+                        f"{header}: {marker} on GET {url} was echoed in the "
+                        f"{'Location header' if token in location else 'response body'}"
+                    ),
+                    description=(
+                        f"The application reflects the {header} header value into its "
+                        "response. An attacker can poison password-reset links, cache "
+                        "keys, or absolute URL generation by supplying a crafted host."
+                    ),
+                    raw={"header": header, "marker": marker},
+                )
+            )
+            break  # one finding per URL is enough
+    return found
+
+
 def _loopback_host(host: str) -> bool:
     """Whether ``host`` names this machine (so a local callback listener is reachable)."""
     return host in {"127.0.0.1", "localhost", "::1", "0.0.0.0", ""}
@@ -631,12 +702,20 @@ async def _own_oob(
     first, then Shaidra waits once, so the wait is paid a single time.
     """
     callback_host = ctx.config.oob_host or "127.0.0.1"
-    ssrf_pending: list[tuple[_Probe, str]] = []
+    ssrf_pending: list[tuple[_Probe, str, str]] = []
     for probe in _ssrf_candidates(probes):
         token = server.new_token()
         response = await _probe_once(client, limiter, probe, server.callback_url(token, callback_host))
         if response is not None:
-            ssrf_pending.append((probe, token))
+            ssrf_pending.append((probe, token, f"{probe.method.lower()} fields"))
+        # JSON APIs ignore form/query encoding; try the same param in a JSON body.
+        json_token = server.new_token()
+        await limiter.acquire()
+        try:
+            await client.post(probe.url, json={probe.param: server.callback_url(json_token, callback_host)})
+        except httpx.HTTPError:
+            continue
+        ssrf_pending.append((probe, json_token, "JSON body"))
     cmdi_pending: list[tuple[_Probe, str, str]] = []
     for probe in probes[:_MAX_CMDI_OOB]:
         for template in _CMDI_OOB_TEMPLATES:
@@ -649,7 +728,7 @@ async def _own_oob(
         return 0
     await asyncio.sleep(_OOB_WAIT)
     found = 0
-    for probe, token in ssrf_pending:
+    for probe, token, via in ssrf_pending:
         if not server.received(token):
             continue
         found += 1
@@ -662,15 +741,15 @@ async def _own_oob(
                 tool="shaidra",
                 url=probe.url,
                 evidence=(
-                    f"{probe.method} {probe.url} [{probe.param}] made the server fetch "
-                    f"{server.callback_url(token, callback_host)}"
+                    f"{probe.method} {probe.url} [{probe.param} via {via}] made the server "
+                    f"fetch {server.callback_url(token, callback_host)}"
                 ),
                 description=(
                     f"The {probe.param!r} parameter makes the server request an attacker-supplied "
                     "URL. A callback to Shaidra's listener proves outbound server-side request "
                     "forgery (SSRF), which can reach internal services or cloud metadata."
                 ),
-                raw={"param": probe.param, "method": probe.method, "token": token},
+                raw={"param": probe.param, "method": probe.method, "via": via, "token": token},
             )
         )
     for probe, token, payload in cmdi_pending:

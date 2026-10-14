@@ -50,9 +50,44 @@ class _ReflectingHandler(BaseHTTPRequestHandler):
         return
 
 
+class _HostEchoHandler(BaseHTTPRequestHandler):
+    """Echo the request's Host header into the body (host-header reflection)."""
+
+    def _respond(self, body: str) -> None:
+        payload = body.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_GET(self) -> None:
+        host = self.headers.get("Host", "")
+        self._respond(f"<html><body>canonical: https://{host}/app</body></html>")
+
+    def do_POST(self) -> None:
+        self.do_GET()
+
+    def log_message(self, *args: object) -> None:  # silence the default logger
+        return
+
+
 @pytest.fixture()
 def reflecting_server() -> Iterator[str]:
     server = ThreadingHTTPServer(("127.0.0.1", 0), _ReflectingHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+@pytest.fixture()
+def host_echo_server() -> Iterator[str]:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _HostEchoHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -114,3 +149,28 @@ def test_builtin_reflection_flags_unescaped_marker(
     assert high, f"expected a HIGH reflected-XSS finding, got {[f.title for f in findings]}"
     assert all(finding.category is Category.WEBVULN for finding in high)
     assert any(finding.tool == "shaidra" for finding in high)
+    # The reflecting handler does not echo the Host header, so the host-header
+    # detector must not fire here.
+    assert not any(finding.title == "Host header injection" for finding in findings)
+
+
+def test_builtin_host_header_reflection_flagged(
+    host_echo_server: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _noop(*args: object, **kwargs: object) -> int:
+        return 0
+
+    async def _no_oob(*args: object, **kwargs: object) -> None:
+        return None
+
+    # Skip the slow time-based SQLi sweep and the OOB listener bind; the
+    # host-header detector and the concurrent dispatch are what this covers.
+    monkeypatch.setattr(webvuln, "_own_sqli", _noop)
+    monkeypatch.setattr(webvuln, "_start_oob", _no_oob)
+
+    findings = asyncio.run(_run_builtin(host_echo_server))
+    hits = [finding for finding in findings if finding.title == "Host header injection"]
+    assert hits, f"expected a Host header injection finding, got {[f.title for f in findings]}"
+    assert all(finding.severity is Severity.MEDIUM for finding in hits)
+    assert all(finding.category is Category.WEBVULN for finding in hits)
+    assert any("sdrhh-" in finding.evidence for finding in hits)
