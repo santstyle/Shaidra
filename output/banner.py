@@ -29,9 +29,11 @@ LOGO_SIZE: Final[tuple[int, int]] = (LOGO_WIDTH, LOGO_HEIGHT)
 
 def banner_text() -> Text:
     """Return the ASCII block-letter banner as a single styled Text block."""
-    text = Text()
-    for line in _ART:
-        text.append(f"{line}\n", style=f"bold {BRAND_PRIMARY}")
+    text = Text(no_wrap=True)
+    for index, line in enumerate(_ART):
+        if index:
+            text.append("\n")
+        text.append(line, style=f"bold {BRAND_PRIMARY}")
     return text
 
 

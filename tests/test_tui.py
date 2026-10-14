@@ -97,6 +97,8 @@ def test_app_composes_dashboard_panels() -> None:
         async with app.run_test(size=(140, 40)) as pilot:
             await pilot.pause()
             assert app.query_one("#logo", Static)
+            logo_first = app.query_one("#logo", Static).content.plain.splitlines()[0].strip()
+            assert logo_first.startswith("███████╗")
             assert app.query_one("#header-info", Static)
             assert app.query_one("#progress", Static)
             assert app.query_one("#feed", RichLog)

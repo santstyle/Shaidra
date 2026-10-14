@@ -39,7 +39,7 @@ from shaidra.core.models import (
 )
 from shaidra.core.orchestrator import KNOWN_TOOLS, orchestrate
 from shaidra.output import theme
-from shaidra.output.banner import logo_art_text_sampled
+from shaidra.output.banner import banner_text
 from shaidra.output.dashboard import DashboardState
 from shaidra.output.report import write_reports
 from shaidra.utils import stats
@@ -272,7 +272,8 @@ class ShaidraApp(App[None]):
         height: auto;
         background: #120C20;
         border-bottom: solid #4C1D95;
-        padding: 0 1;
+        padding: 1 2;
+        align-vertical: middle;
     }
     #logo {
         width: auto;
@@ -281,7 +282,6 @@ class ShaidraApp(App[None]):
     #header-info {
         width: 1fr;
         height: auto;
-        padding-top: 1;
     }
     #main {
         height: 1fr;
@@ -351,7 +351,7 @@ class ShaidraApp(App[None]):
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="header"):
-            yield Static(logo_art_text_sampled(5), id="logo")
+            yield Static(banner_text(), id="logo")
             yield Static(_header_info(self.ctx), id="header-info")
         with Horizontal(id="main"):
             with Vertical(id="left", classes="panel"):
