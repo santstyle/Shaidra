@@ -111,13 +111,13 @@ async def stream_lines(argv: Sequence[str], options: RunOptions | None = None) -
         return
 
     stderr = proc.stderr
-    assert stderr is not None  # noqa: S101 - narrowing; stderr is a pipe by construction
+    assert stderr is not None
     stderr_task = asyncio.create_task(stderr.read())
     try:
         async with asyncio.timeout(opts.timeout):  # noqa: ANYIO_OK - spec mandates asyncio
             await _feed_stdin(proc, opts.input_text)
             stdout = proc.stdout
-            assert stdout is not None  # noqa: S101 - narrowing; stdout is a pipe by construction
+            assert stdout is not None
             async for raw in stdout:
                 line = raw.decode("utf-8", "replace").rstrip("\r\n")
                 if line:

@@ -9,6 +9,7 @@ secrets is reported even when its name looks innocuous.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
@@ -23,11 +24,11 @@ import httpx
 
 from shaidra.core.events import EventBus
 from shaidra.core.models import Category, Finding, Host, JsonValue, LogLevel, ScanContext, Severity
-from shaidra.utils.process import RunOptions, run_tool, stream_lines
+from shaidra.stages.misconfig import is_known_exposure
 from shaidra.utils.http import make_http_client
+from shaidra.utils.process import RunOptions, run_tool, stream_lines
 from shaidra.utils.rate_limiter import RateLimiter
 from shaidra.utils.secrets import SecretMatch, scan_text
-from shaidra.stages.misconfig import is_known_exposure
 
 STAGE_NAME: Final[str] = "Content discovery"
 _STATUS_CODES: Final[str] = "200,204,301,302,307,401,403"
@@ -36,6 +37,7 @@ _MAX_FINDINGS: Final[int] = 40
 _MAX_BASES: Final[int] = 6
 _PROGRESS_EVERY: Final[int] = 25
 _OWN_BUDGET: Final[int] = 700
+_OWN_BUDGET_DEEP: Final[int] = 3000
 _OWN_TIMEOUT: Final[float] = 10.0
 _OWN_HIT_CODES: Final[frozenset[int]] = frozenset({200, 204, 301, 302, 307, 401, 403})
 _BODY_CAP: Final[int] = 256_000
@@ -191,10 +193,8 @@ async def _ffuf_hits(ctx: ScanContext, base: str, wordlist: Path) -> list[_Hit]:
         text = _read_report(report) or result.stdout
         return _ffuf_stdout(text)
     finally:
-        try:
+        with contextlib.suppress(OSError):
             os.remove(report)
-        except OSError:
-            pass
 
 
 def _read_report(path: str) -> str:
@@ -213,7 +213,7 @@ async def _own_hits(ctx: ScanContext, base: str, wordlist: Path, bus: EventBus) 
     count is capped by _OWN_BUDGET.
     """
     lines = _wordlist_lines(wordlist)
-    budget = min(len(lines), _OWN_BUDGET)
+    budget = _content_budget(ctx, len(lines))
     if budget == 0:
         return []
     limiter = RateLimiter(float(max(1, ctx.rate_limit)))
@@ -246,6 +246,17 @@ async def _own_hits(ctx: ScanContext, base: str, wordlist: Path, bus: EventBus) 
                     )
                 )
     return hits
+
+
+def _content_budget(ctx: ScanContext, total: int) -> int:
+    """Return how many wordlist entries to probe.
+
+    The full wordlist is probed under ``--extended``; otherwise the count is
+    capped at the quick budget, or the deep budget in ``--mode deep``.
+    """
+    if ctx.extended:
+        return total
+    return min(total, ctx.scale(_OWN_BUDGET, _OWN_BUDGET_DEEP))
 
 
 def _wordlist_lines(path: Path) -> list[str]:

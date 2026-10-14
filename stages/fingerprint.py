@@ -21,8 +21,8 @@ import httpx
 
 from shaidra.core.events import EventBus
 from shaidra.core.models import Host, LogLevel, ScanContext
-from shaidra.utils.process import RunOptions, run_tool
 from shaidra.utils.http import make_http_client
+from shaidra.utils.process import RunOptions, run_tool
 from shaidra.utils.rate_limiter import RateLimiter
 
 STAGE: Final[str] = "fingerprint"

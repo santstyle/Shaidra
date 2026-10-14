@@ -176,7 +176,7 @@ async def _guarded(fn: StageCall, name: str, ctx: ScanContext, bus: EventBus) ->
     """
     try:
         await fn(ctx, bus)
-    except Exception as exc:  # noqa: BLE001 - supervisor boundary: one stage must never kill the scan
+    except Exception as exc:
         await bus.stage_warn(name, f"unexpected error: {exc}")
 
 

@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Final, NamedTuple
 
-from shaidra.core.models import Finding, JsonValue, SEVERITY_RANK, ScanContext, Severity
+from shaidra.core.models import SEVERITY_RANK, Finding, JsonValue, ScanContext, Severity
 from shaidra.output.theme import SEVERITY_ORDER
 
 _KNOWN_FORMATS: Final[frozenset[str]] = frozenset({"json", "markdown", "txt"})
@@ -128,7 +128,7 @@ def _render_json(ctx: ScanContext, findings: list[Finding], timeline: _Timeline)
             "start": timeline.start,
             "end": timeline.end,
             "duration_seconds": timeline.duration,
-            "tools_available": {name: found for name, found in sorted(ctx.available_tools.items())},
+            "tools_available": dict(sorted(ctx.available_tools.items())),
         },
         "hosts": [host.to_dict() for host in sorted(ctx.hosts.values(), key=lambda item: item.host)],
         "findings": [_finding_payload(finding) for finding in findings],

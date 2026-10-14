@@ -9,6 +9,7 @@ requested (``-oJ`` json, ``-oM`` markdown, ``-oT`` text, ``-oA`` all).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 import time
 from dataclasses import replace
@@ -52,10 +53,8 @@ def _harden_streams() -> None:
         kwargs: dict[str, str] = {"errors": "replace"}
         if not interactive:
             kwargs["encoding"] = "utf-8"
-        try:
+        with contextlib.suppress(ValueError, OSError):
             reconfigure(**kwargs)
-        except (ValueError, OSError):
-            pass
 
 
 def _make_console() -> Console:

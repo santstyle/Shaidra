@@ -12,7 +12,7 @@ import math
 from shaidra.core.models import SEVERITY_RANK, Finding, Severity
 
 
-def normalize_severity(value: str | int | float | None) -> Severity:
+def normalize_severity(value: str | float | None) -> Severity:
     """Map a raw severity payload from any tool onto the ``Severity`` enum.
 
     Strings are matched case-insensitively against severity labels (including

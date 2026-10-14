@@ -21,19 +21,24 @@ import httpx
 
 from shaidra.core.events import EventBus
 from shaidra.core.models import FormTarget, JsonValue, LogLevel, ScanContext
-from shaidra.utils.process import RunOptions, stream_lines
 from shaidra.utils.http import make_http_client
+from shaidra.utils.process import RunOptions, stream_lines
 from shaidra.utils.rate_limiter import RateLimiter
 
 STAGE_NAME: Final[str] = "Crawl"
 MAX_URLS: Final[int] = 2000
+MAX_URLS_DEEP: Final[int] = 8000
 MAX_BASES: Final[int] = 3
 _MAX_RAW: Final[int] = 4000
+_MAX_RAW_DEEP: Final[int] = 15000
 _SCHEMES: Final[tuple[str, ...]] = ("http://", "https://")
 SPIDER_MAX_PAGES: Final[int] = 80
+SPIDER_MAX_PAGES_DEEP: Final[int] = 300
 _MAX_FORM_FIELDS: Final[int] = 24
 _MAX_FORMS: Final[int] = 300
+_MAX_FORMS_DEEP: Final[int] = 1000
 SPIDER_DEPTH: Final[int] = 3
+SPIDER_DEPTH_DEEP: Final[int] = 6
 SPIDER_TIMEOUT: Final[float] = 10.0
 _SPIDER_BODY_CAP: Final[int] = 250_000
 _SPIDER_ATTR_RE: Final[re.Pattern[str]] = re.compile(
@@ -73,7 +78,9 @@ _JS_PATH_RE: Final[re.Pattern[str]] = re.compile(
     r"""["'`]((?:https?://|/)[A-Za-z0-9_\-./?=&%:~+#]{1,300})["'`]"""
 )
 _MAX_META_URLS: Final[int] = 150
+_MAX_META_URLS_DEEP: Final[int] = 500
 _MAX_JS_FILES: Final[int] = 12
+_MAX_JS_FILES_DEEP: Final[int] = 48
 
 Crawler = Literal["katana", "gau", "waybackurls"]
 
@@ -152,16 +159,21 @@ async def _spider(ctx: ScanContext, bus: EventBus, seeds: Sequence[str]) -> list
     seen_forms: set[tuple[str, str, tuple[str, ...]]] = set()
     fetched = 0
     js_fetched = 0
+    max_urls = ctx.scale(MAX_URLS, MAX_URLS_DEEP)
+    max_depth = ctx.scale(SPIDER_DEPTH, SPIDER_DEPTH_DEEP)
+    max_pages = ctx.scale(SPIDER_MAX_PAGES, SPIDER_MAX_PAGES_DEEP)
+    max_js = ctx.scale(_MAX_JS_FILES, _MAX_JS_FILES_DEEP)
+    max_forms = ctx.scale(_MAX_FORMS, _MAX_FORMS_DEEP)
     async with make_http_client(ctx, follow_redirects=True, timeout=SPIDER_TIMEOUT, verify=False) as client:
         for meta_url in await _meta_urls(ctx, client, limiter, seeds):
             if meta_url not in discovered:
                 frontier.append((meta_url, 1))
-        while frontier and len(discovered) < MAX_URLS:
+        while frontier and len(discovered) < max_urls:
             url, depth = frontier.pop(0)
             if url in discovered:
                 continue
             discovered[url] = None
-            if depth >= SPIDER_DEPTH or fetched >= SPIDER_MAX_PAGES:
+            if depth >= max_depth or fetched >= max_pages:
                 continue
             await limiter.acquire()
             fetched += 1
@@ -182,9 +194,9 @@ async def _spider(ctx: ScanContext, bus: EventBus, seeds: Sequence[str]) -> list
                     continue
                 if absolute not in discovered:
                     frontier.append((absolute, depth + 1))
-            if js_fetched < _MAX_JS_FILES:
+            if js_fetched < max_js:
                 for reference in _script_srcs(body):
-                    if js_fetched >= _MAX_JS_FILES:
+                    if js_fetched >= max_js:
                         break
                     absolute = urljoin(url, reference)
                     if not _kept_script(absolute) or not ctx.scope.in_scope(absolute):
@@ -207,9 +219,9 @@ async def _spider(ctx: ScanContext, bus: EventBus, seeds: Sequence[str]) -> list
                     continue
                 seen_forms.add(key)
                 ctx.form_targets.append(target)
-                if len(ctx.form_targets) >= _MAX_FORMS:
+                if len(ctx.form_targets) >= max_forms:
                     break
-    return list(discovered)[:MAX_URLS]
+    return list(discovered)[:max_urls]
 
 
 async def _meta_urls(
@@ -222,6 +234,7 @@ async def _meta_urls(
     Anything out of scope is dropped before it reaches the crawl frontier.
     """
     found: dict[str, None] = {}
+    cap = ctx.scale(_MAX_META_URLS, _MAX_META_URLS_DEEP)
     for base in seeds:
         root = base.rstrip("/") + "/"
         robots = await _fetch_text(client, limiter, urljoin(root, "robots.txt"))
@@ -239,9 +252,9 @@ async def _meta_urls(
         for sitemap in sitemaps:
             for url in await _sitemap_urls(client, limiter, sitemap):
                 found[url] = None
-        if len(found) >= _MAX_META_URLS:
+        if len(found) >= cap:
             break
-    return [url for url in found if ctx.scope.in_scope(url)][:_MAX_META_URLS]
+    return [url for url in found if ctx.scope.in_scope(url)][:cap]
 
 
 async def _sitemap_urls(client: httpx.AsyncClient, limiter: RateLimiter, url: str) -> list[str]:
@@ -418,6 +431,7 @@ async def _katana_urls(ctx: ScanContext) -> list[str]:
     options = RunOptions(timeout=float(ctx.config.timeout_for("katana")))
     depth = str(ctx.config.katana_depth)
     rate = str(ctx.config.lowered_rate() if ctx.waf else ctx.rate_limit)
+    cap = ctx.scale(_MAX_RAW, _MAX_RAW_DEEP)
     urls: list[str] = []
     for base in _base_urls(ctx):
         argv = ["katana", "-u", base, "-silent", "-jsonl", "-d", depth, "-jc", "-kf", "all", "-rl", rate]
@@ -425,24 +439,25 @@ async def _katana_urls(ctx: ScanContext) -> list[str]:
             url = _katana_url(line)
             if url:
                 urls.append(url)
-            if len(urls) >= _MAX_RAW:
+            if len(urls) >= cap:
                 return urls
     return urls
 
 
 async def _archive_urls(ctx: ScanContext, prefix: Sequence[str]) -> list[str]:
     options = RunOptions(timeout=float(ctx.config.timeout_for(prefix[0])))
+    cap = ctx.scale(_MAX_RAW, _MAX_RAW_DEEP)
     urls: list[str] = []
     for host in _crawl_hosts(ctx):
-        urls.extend(await _stream_urls([*prefix, host], options))
+        urls.extend(await _stream_urls([*prefix, host], options, cap))
     return urls
 
 
-async def _stream_urls(argv: Sequence[str], options: RunOptions) -> list[str]:
+async def _stream_urls(argv: Sequence[str], options: RunOptions, cap: int) -> list[str]:
     urls: list[str] = []
     async for line in stream_lines(argv, options):
         urls.append(line)
-        if len(urls) >= _MAX_RAW:
+        if len(urls) >= cap:
             break
     return urls
 
@@ -494,6 +509,7 @@ def _crawl_hosts(ctx: ScanContext) -> list[str]:
 
 
 def _finalize(ctx: ScanContext, raw: list[str], seeds: list[str]) -> list[str]:
+    cap = ctx.scale(MAX_URLS, MAX_URLS_DEEP)
     urls: dict[str, None] = {}
     for candidate in raw:
         clean = candidate.strip()
@@ -502,7 +518,7 @@ def _finalize(ctx: ScanContext, raw: list[str], seeds: list[str]) -> list[str]:
         if not ctx.scope.in_scope(clean):
             continue
         urls[clean] = None
-        if len(urls) >= MAX_URLS:
+        if len(urls) >= cap:
             break
     if urls:
         return list(urls)

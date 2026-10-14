@@ -29,6 +29,6 @@ def test_reflection_context_returns_none_when_marker_absent() -> None:
 
 
 def test_only_html_and_attribute_contexts_are_executable() -> None:
-    assert _EXEC_CONTEXTS == frozenset({"html", "attribute"})
+    assert frozenset({"html", "attribute"}) == _EXEC_CONTEXTS
     assert "script" not in _EXEC_CONTEXTS
     assert "comment" not in _EXEC_CONTEXTS

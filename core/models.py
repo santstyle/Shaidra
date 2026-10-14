@@ -233,6 +233,15 @@ class ScanContext:
         """Report whether an external tool was found on PATH."""
         return self.available_tools.get(name, False)
 
+    @property
+    def deep(self) -> bool:
+        """Whether deep mode is active, widening per-stage coverage budgets."""
+        return self.mode == "deep"
+
+    def scale(self, quick: int, deep: int) -> int:
+        """Return the deep budget in deep mode, otherwise the quick one."""
+        return deep if self.deep else quick
+
 
 def _merge_host(target: Host, incoming: Host) -> None:
     """Copy populated fields from incoming onto target without clobbering known values."""

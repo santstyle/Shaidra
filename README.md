@@ -102,8 +102,8 @@ shaidra [OPTIONS] TARGET
 | `-c, --categories LIST` | Comma-separated categories (default: all) |
 | `-r, --rate-limit N` | Requests per second (default: 40) |
 | `--threads N` | Concurrency for fuzzing tools |
-| `-m, --mode MODE` | `quick` or `deep` |
-| `-x, --extended` | Enable heavy checks (screenshots, full wordlists) |
+| `-m, --mode MODE` | `quick` (default) or `deep`: deep widens crawl depth, port sweep, and probe budgets |
+| `-x, --extended` | Enable heavy checks: full-page screenshots and the entire content wordlist |
 | `--config FILE` | Path to a `config.yaml` |
 | `-v, --verbose` | Show discovered hosts and extra detail |
 | `-q, --quiet` | Suppress live output |
@@ -112,6 +112,19 @@ shaidra [OPTIONS] TARGET
 | `--output-name NAME` | Base name for report files |
 | `--install-tools` | Download and install missing external tools into a per-user bin dir (no admin needed) |
 | `--version` | Show the version and exit |
+
+### Scan modes
+
+`--mode deep` raises the per-stage coverage budgets so more of the target is
+reached: the built-in spider crawls deeper (depth 3 → 6) and keeps more pages,
+URLs, JavaScript bundles, and forms; the built-in TCP port scan widens from the
+common-port set to the full 1–1024 range plus that set; and the built-in
+content, web-vuln, and subdomain-probing budgets grow proportionally. Reach for
+it when a quick pass misses real routes on a large application.
+
+`--extended` enables heavier, slower checks: full-page screenshots (via
+gowitness) and probing the **entire** content wordlist instead of the capped
+subset.
 
 ### Reports
 

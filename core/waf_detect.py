@@ -7,6 +7,7 @@ absent.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
@@ -68,10 +69,8 @@ async def _via_wafw00f(ctx: ScanContext) -> str | None:
             return None
         return _parse_wafw00f(stdout)
     finally:
-        try:
+        with contextlib.suppress(OSError):
             os.remove(report)
-        except OSError:
-            pass
 
 
 def _read_report(path: str) -> str:

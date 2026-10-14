@@ -25,9 +25,9 @@ import httpx
 
 from shaidra.core.events import EventBus
 from shaidra.core.models import Category, Finding, FormTarget, JsonValue, LogLevel, ScanContext, Severity
+from shaidra.utils.http import make_http_client
 from shaidra.utils.oob import InteractionServer
 from shaidra.utils.process import RunOptions, run_tool, stream_lines
-from shaidra.utils.http import make_http_client
 from shaidra.utils.rate_limiter import RateLimiter
 
 STAGE_NAME: Final[str] = "Web vulns"
@@ -35,9 +35,12 @@ MAX_INPUT: Final[int] = 500
 MAX_DALFOX: Final[int] = 50
 MAX_SQLMAP: Final[int] = 3
 MAX_OWN_PROBES: Final[int] = 180
+MAX_OWN_PROBES_DEEP: Final[int] = 600
 MAX_XXE_URLS: Final[int] = 40
+MAX_XXE_URLS_DEEP: Final[int] = 120
 _MAX_PARAMS_PER_URL: Final[int] = 6
 _MAX_PROBE_URLS: Final[int] = 2000
+_MAX_PROBE_URLS_DEEP: Final[int] = 6000
 # Endpoints that look dynamic get common parameter names injected as a
 # lowest-priority fallback, so JS-only targets (no query string, no form) still
 # expose parameters for the injection detectors to exercise.
@@ -97,12 +100,16 @@ _SSTI_PAYLOADS: Final[tuple[tuple[str, str], ...]] = (
 _SSTI_DATA_URI_RE: Final[re.Pattern[str]] = re.compile(r"data:[^,;]*;base64,[A-Za-z0-9+/=]+", re.IGNORECASE)
 _SSTI_B64_RUN_RE: Final[re.Pattern[str]] = re.compile(r"[A-Za-z0-9+/]{60,}={0,2}")
 _XXE_PAYLOADS: Final[tuple[str, ...]] = (
-    '<?xml version="1.0" encoding="UTF-8"?>'
-    '<!DOCTYPE root [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
-    "<root>&xxe;</root>",
-    '<?xml version="1.0"?>'
-    '<!DOCTYPE root [<!ENTITY xxe SYSTEM "php://filter/convert.base64-encode/resource=/etc/passwd">]>'
-    "<root>&xxe;</root>",
+    (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<!DOCTYPE root [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+        "<root>&xxe;</root>"
+    ),
+    (
+        '<?xml version="1.0"?>'
+        '<!DOCTYPE root [<!ENTITY xxe SYSTEM "php://filter/convert.base64-encode/resource=/etc/passwd">]>'
+        "<root>&xxe;</root>"
+    ),
 )
 _XXE_PARAM_RE: Final[re.Pattern[str]] = re.compile(r"xml|data|body|content|input|textarea|payload", re.IGNORECASE)
 _SQL_PAYLOADS: Final[tuple[str, ...]] = ("'", '"')
@@ -214,11 +221,12 @@ def _probe_urls(ctx: ScanContext) -> list[str]:
     discovered URL — including crawler-injected ``?name=`` variants — rather
     than the smaller list the external-tool path feeds to nuclei.
     """
-    urls = _filter_urls(ctx, ctx.crawled_urls, cap=_MAX_PROBE_URLS)
+    cap = ctx.scale(_MAX_PROBE_URLS, _MAX_PROBE_URLS_DEEP)
+    urls = _filter_urls(ctx, ctx.crawled_urls, cap=cap)
     if urls:
         return urls
     seeds = [ctx.target_url, *(host.url for host in ctx.live_hosts() if host.url)]
-    return _filter_urls(ctx, seeds, cap=_MAX_PROBE_URLS)
+    return _filter_urls(ctx, seeds, cap=cap)
 
 
 def _filter_urls(ctx: ScanContext, source: Sequence[str], cap: int = MAX_INPUT) -> list[str]:
@@ -252,9 +260,10 @@ async def _builtin_fallback(ctx: ScanContext, bus: EventBus) -> None:
     if not ctx.web_reachable:
         await bus.stage_skip(STAGE_NAME, "nuclei and dalfox not installed and target not reachable")
         return
-    probes = _select_probes([*_query_probes(urls), *_form_probes(ctx.form_targets)])
-    if len(probes) < MAX_OWN_PROBES:
-        probes.extend(_injected_probes(urls, probes, MAX_OWN_PROBES - len(probes)))
+    max_probes = ctx.scale(MAX_OWN_PROBES, MAX_OWN_PROBES_DEEP)
+    probes = _select_probes([*_query_probes(urls), *_form_probes(ctx.form_targets)], max_probes)
+    if len(probes) < max_probes:
+        probes.extend(_injected_probes(urls, probes, max_probes - len(probes)))
     await bus.log(
         f"nuclei and dalfox not installed; using built-in checks on {len(probes)} parameter(s)",
         LogLevel.WARN,
@@ -332,7 +341,7 @@ def _form_probes(forms: Sequence[FormTarget]) -> list[_Probe]:
     return probes
 
 
-def _select_probes(probes: Sequence[_Probe]) -> list[_Probe]:
+def _select_probes(probes: Sequence[_Probe], cap: int = MAX_OWN_PROBES) -> list[_Probe]:
     """Deduplicate by (method, url, param), keeping the richest field set, then cap.
 
     A form and its GET query-string URL can yield the same target; the form
@@ -350,7 +359,7 @@ def _select_probes(probes: Sequence[_Probe]) -> list[_Probe]:
             continue
         index[key] = len(selected)
         selected.append(probe)
-        if len(selected) >= MAX_OWN_PROBES:
+        if len(selected) >= cap:
             break
     return selected
 
@@ -498,6 +507,7 @@ async def _own_xxe(
             found += 1
             await _emit_xxe(ctx, bus, probe.url, f"{probe.method} {probe.url} [{probe.param}]")
             break
+    cap = ctx.scale(MAX_XXE_URLS, MAX_XXE_URLS_DEEP)
     targets: list[str] = []
     seen: set[str] = set()
     for url in [*(probe.url for probe in probes), *urls]:
@@ -505,7 +515,7 @@ async def _own_xxe(
             continue
         seen.add(url)
         targets.append(url)
-        if len(targets) >= MAX_XXE_URLS:
+        if len(targets) >= cap:
             break
     for url in targets:
         for payload in _XXE_PAYLOADS:
@@ -1129,7 +1139,7 @@ def _dalfox_finding(line: str, fallback_host: str) -> Finding | None:
     if not text:
         return None
     head = text[:8].lower()
-    if head.startswith("[v]") or head.startswith("[poc]"):
+    if head.startswith(("[v]", "[poc]")):
         url = _first_url(text)
         lowered = text.lower()
         severity = Severity.HIGH if ("high" in lowered or "critical" in lowered) else Severity.MEDIUM

@@ -26,8 +26,8 @@ import httpx
 
 from shaidra.core.events import EventBus
 from shaidra.core.models import Category, Finding, JsonValue, LogLevel, ScanContext, Severity
-from shaidra.utils.process import RunOptions, stream_lines
 from shaidra.utils.http import make_http_client
+from shaidra.utils.process import RunOptions, stream_lines
 from shaidra.utils.rate_limiter import RateLimiter
 
 STAGE: Final[str] = "API scan"

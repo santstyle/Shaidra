@@ -166,24 +166,30 @@ def _title_and_description(result: _ProbeResult) -> tuple[str, str]:
         case CorsVerdict.REFLECT_WITH_CREDS:
             return (
                 "CORS misconfiguration: reflected origin with credentials",
-                f"The server reflects the attacker Origin {result.origin} in "
-                "Access-Control-Allow-Origin and sets "
-                "Access-Control-Allow-Credentials: true, allowing cross-origin "
-                "reads of authenticated responses from any website.",
+                (
+                    f"The server reflects the attacker Origin {result.origin} in "
+                    "Access-Control-Allow-Origin and sets "
+                    "Access-Control-Allow-Credentials: true, allowing cross-origin "
+                    "reads of authenticated responses from any website."
+                ),
             )
         case CorsVerdict.REFLECT_NO_CREDS:
             return (
                 "CORS misconfiguration: reflected origin",
-                f"The server reflects the attacker Origin {result.origin} in "
-                "Access-Control-Allow-Origin instead of enforcing an allowlist, "
-                "allowing cross-origin reads of responses from any website.",
+                (
+                    f"The server reflects the attacker Origin {result.origin} in "
+                    "Access-Control-Allow-Origin instead of enforcing an allowlist, "
+                    "allowing cross-origin reads of responses from any website."
+                ),
             )
         case CorsVerdict.NULL_REFLECTION:
             return (
                 "CORS misconfiguration: null origin reflection",
-                "The server answers the null Origin with "
-                "Access-Control-Allow-Origin: null, allowing sandboxed frames "
-                "and data: URLs to read responses cross-origin.",
+                (
+                    "The server answers the null Origin with "
+                    "Access-Control-Allow-Origin: null, allowing sandboxed frames "
+                    "and data: URLs to read responses cross-origin."
+                ),
             )
         case CorsVerdict.SAFE:
             return ("CORS misconfiguration", "No misconfiguration detected.")

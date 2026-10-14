@@ -149,7 +149,7 @@ def _parse_rules(text: str) -> list[str]:
 def _rule_matches(rule: str, host: str) -> bool:
     if _looks_like_cidr(rule):
         return _ip_in_network(host, rule)
-    bare = rule[2:] if rule.startswith("*.") else rule
+    bare = rule.removeprefix("*.")
     return host == bare or host.endswith(f".{bare}")
 
 

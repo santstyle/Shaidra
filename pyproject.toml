@@ -34,3 +34,19 @@ shaidra = ["config.yaml", "wordlists/*.txt", "templates/*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["build", "dist", "*.egg-info"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "PIE", "RUF", "ISC", "PYI", "FURB"]
+ignore = [
+    "E501", # the codebase intentionally keeps a few lines past the configured width
+    "N999", # flat layout: the package root directory is "Shaidra", not snake_case
+    "B006", # typer multi-value options require a mutable list default
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["shaidra"]

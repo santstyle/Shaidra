@@ -300,9 +300,7 @@ def _plausible(value: str, rule: _Rule) -> bool:
             return False
         if _entropy(stripped) < _ENTROPY_FLOOR:
             return False
-    if rule.luhn_checked and not _luhn(stripped):
-        return False
-    return True
+    return not rule.luhn_checked or _luhn(stripped)
 
 
 def _luhn(value: str) -> bool:

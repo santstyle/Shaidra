@@ -207,7 +207,7 @@ def _extract_cve(info: dict[str, JsonValue]) -> str | None:
     raw = classification.get("cve-id")
     match raw:
         case str():
-            return raw if raw else None
+            return raw or None
         case list():
             ids = [entry for entry in raw if isinstance(entry, str) and entry]
             return ", ".join(ids) if ids else None

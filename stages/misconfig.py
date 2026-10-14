@@ -17,8 +17,8 @@ import httpx
 
 from shaidra.core.events import EventBus
 from shaidra.core.models import Category, Finding, Host, JsonValue, ScanContext, Severity
-from shaidra.utils.process import RunOptions, run_tool, stream_lines
 from shaidra.utils.http import make_http_client
+from shaidra.utils.process import RunOptions, run_tool, stream_lines
 from shaidra.utils.rate_limiter import RateLimiter
 
 STAGE_NAME: Final[str] = "Misconfiguration"
@@ -418,12 +418,18 @@ def _nuclei_finding(line: str, ctx: ScanContext) -> Finding | None:
 
 def _severity(raw: str) -> Severity:
     match raw.lower():
-        case "critical": return Severity.CRITICAL
-        case "high": return Severity.HIGH
-        case "medium": return Severity.MEDIUM
-        case "low": return Severity.LOW
-        case "info": return Severity.INFO
-        case _: return Severity.UNKNOWN
+        case "critical":
+            return Severity.CRITICAL
+        case "high":
+            return Severity.HIGH
+        case "medium":
+            return Severity.MEDIUM
+        case "low":
+            return Severity.LOW
+        case "info":
+            return Severity.INFO
+        case _:
+            return Severity.UNKNOWN
 
 
 def _testssl_bin(ctx: ScanContext) -> str | None:

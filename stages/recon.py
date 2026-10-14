@@ -21,13 +21,14 @@ import httpx
 
 from shaidra.core.events import EventBus
 from shaidra.core.models import Category, Finding, Host, LogLevel, ScanContext, Severity
-from shaidra.utils.process import RunOptions, run_tool, stream_lines
 from shaidra.utils.http import make_http_client
+from shaidra.utils.process import RunOptions, run_tool, stream_lines
 from shaidra.utils.rate_limiter import RateLimiter
 
 STAGE: Final[str] = "recon"
 PORT_STAGE: Final[str] = "port-scan"
 FALLBACK_HOST_CAP: Final[int] = 100
+FALLBACK_HOST_CAP_DEEP: Final[int] = 400
 FALLBACK_TIMEOUT: Final[float] = 10.0
 FALLBACK_CONCURRENCY: Final[int] = 10
 _TITLE_RE: Final[re.Pattern[str]] = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
@@ -114,6 +115,8 @@ _COMMON_PORTS: Final[tuple[int, ...]] = (
     55600, 56737, 56738, 57294, 57797, 58080, 60020, 60443, 61532, 61900,
     62078, 63331, 64623, 64680, 65000, 65129, 65389,
 )
+# Deep mode widens the port sweep to the full 1-1024 range plus the common set.
+_DEEP_PORTS: Final[tuple[int, ...]] = tuple(sorted({*_COMMON_PORTS, *range(1, 1025)}))
 _CRT_SH_URL: Final[str] = "https://crt.sh/"
 _HACKERTARGET_URL: Final[str] = "https://api.hackertarget.com/hostsearch/"
 _CRT_TIMEOUT: Final[float] = 25.0
@@ -205,8 +208,9 @@ async def _scan_ports_builtin(ctx: ScanContext, bus: EventBus) -> None:
     if matched is None:
         await bus.stage_skip(PORT_STAGE, "target not in scope")
         return
+    ports = _DEEP_PORTS if ctx.deep else _COMMON_PORTS
     await bus.log(
-        f"naabu not installed; falling back to built-in TCP scan ({len(_COMMON_PORTS)} common ports).",
+        f"naabu not installed; falling back to built-in TCP scan ({len(ports)} ports).",
         LogLevel.WARN,
     )
     limiter = RateLimiter(float(ctx.rate_limit))
@@ -218,14 +222,14 @@ async def _scan_ports_builtin(ctx: ScanContext, bus: EventBus) -> None:
         async with sem:
             try:
                 _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=_PORT_SCAN_TIMEOUT)
-            except (OSError, asyncio.TimeoutError):
+            except (TimeoutError, OSError):
                 return
             writer.close()
             with contextlib.suppress(Exception):
                 await writer.wait_closed()
         open_ports.append(port)
 
-    await asyncio.gather(*(probe(port) for port in _COMMON_PORTS), return_exceptions=True)
+    await asyncio.gather(*(probe(port) for port in ports), return_exceptions=True)
     open_ports.sort()
     if matched.port is None and open_ports:
         matched.port = open_ports[0]
@@ -370,7 +374,7 @@ async def _resolves(name: str) -> bool:
     loop = asyncio.get_running_loop()
     try:
         infos = await asyncio.wait_for(loop.getaddrinfo(name, None), timeout=_DNS_TIMEOUT)
-    except (OSError, asyncio.TimeoutError):
+    except (TimeoutError, OSError):
         return False
     return bool(infos)
 
@@ -424,9 +428,7 @@ async def _httpx_is_pd(ctx: ScanContext) -> bool:
     output = f"{result.stdout}\n{result.stderr}"
     if "projectdiscovery" in output.casefold():
         return True
-    if re.search(r"httpx[^\n]{0,16}\s+\d", output, re.IGNORECASE):
-        return False
-    return True
+    return not re.search(r"httpx[^\n]{0,16}\s+\d", output, re.IGNORECASE)
 
 
 async def _probe_with_pd_httpx(ctx: ScanContext, bus: EventBus, candidates: list[Host]) -> list[Host]:
@@ -447,7 +449,8 @@ async def _probe_with_pd_httpx(ctx: ScanContext, bus: EventBus, candidates: list
 
 async def _probe_with_python_httpx(ctx: ScanContext, bus: EventBus, candidates: list[Host]) -> list[Host]:
     """Fallback: one GET per host via the python httpx library."""
-    capped = candidates[:FALLBACK_HOST_CAP]
+    cap = ctx.scale(FALLBACK_HOST_CAP, FALLBACK_HOST_CAP_DEEP)
+    capped = candidates[:cap]
     await bus.log(
         f"PD httpx not installed; falling back to built-in probing ({len(capped)}/{len(candidates)} host(s)).",
         LogLevel.WARN,
