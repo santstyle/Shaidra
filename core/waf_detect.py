@@ -111,8 +111,9 @@ def _firewall_name(entry: JsonValue) -> str | None:
 def _parse_wafw00f_text(stdout: str) -> str | None:
     for line in stdout.splitlines():
         lowered = line.lower()
-        if "is behind" in lowered:
-            return line.split("is behind", 1)[1].strip().rstrip(".") or None
+        index = lowered.find("is behind")
+        if index != -1:
+            return line[index + len("is behind") :].strip().rstrip(".") or None
     return None
 
 
